@@ -10,6 +10,14 @@ from Services.commands import CommandError, run_command, run_process
 
 logger = logging.getLogger(__name__)
 MAX_ALLTECH_AUTH_RETRIES = 2
+ALLTECH_FALLBACK_ARCHES = ("arm64", "armv7")
+ALLTECH_AVAILABILITY_MARKERS = (
+    "no download url available",
+    "not be available for this device",
+    "might require purchase",
+    "app is not available",
+    "incompatible with your device",
+)
 
 
 class DownloadError(RuntimeError):
@@ -50,7 +58,7 @@ class PlayDownloader:
             return
 
         if backend == "alltech-gplay":
-            await self._alltech_run_with_auth_retry(package_name, output_dir)
+            await self._alltech_run_with_fallback(package_name, output_dir)
             return
 
         if backend == "gplaydl":
@@ -91,10 +99,63 @@ class PlayDownloader:
             "هیچ دانلودری پیدا نشد. ALLTECH_GPLAY_PATH یا gplaydl/apkeep یا PLAY_DOWNLOADER_CMD را تنظیم کن."
         )
 
-    async def _alltech_run_with_auth_retry(
+    async def _alltech_run_with_fallback(
         self, package_name: str, output_dir: Path
     ) -> None:
-        args = self._alltech_args(package_name, output_dir)
+        primary_arch = (self._settings.play_arch or "arm64").strip().lower()
+        arches: list[str] = [primary_arch]
+        for arch in ALLTECH_FALLBACK_ARCHES:
+            if arch not in arches:
+                arches.append(arch)
+
+        last_error: CommandError | None = None
+        availability_seen = False
+
+        for index, arch in enumerate(arches):
+            try:
+                await self._alltech_run_with_auth_retry(package_name, output_dir, arch)
+                return
+            except CommandError as exc:
+                last_error = exc
+                if self._is_alltech_availability_error(str(exc)):
+                    availability_seen = True
+                    logger.warning(
+                        "alltech-gplay availability error for %s arch=%s (try %d/%d): %s",
+                        package_name,
+                        arch,
+                        index + 1,
+                        len(arches),
+                        exc,
+                    )
+                    continue
+                raise
+
+        if availability_seen:
+            logger.warning(
+                "alltech-gplay availability error persists for %s after arch fallback; rotating profile",
+                package_name,
+            )
+            try:
+                await self._alltech_force_reauth()
+            except CommandError as exc:
+                last_error = exc
+            else:
+                try:
+                    await self._alltech_run_with_auth_retry(
+                        package_name, output_dir, primary_arch
+                    )
+                    return
+                except CommandError as exc:
+                    last_error = exc
+
+        if last_error is None:
+            raise CommandError("alltech-gplay failed without raising")
+        raise last_error
+
+    async def _alltech_run_with_auth_retry(
+        self, package_name: str, output_dir: Path, arch: str
+    ) -> None:
+        args = self._alltech_args(package_name, output_dir, arch)
         last_error: CommandError | None = None
         for attempt in range(MAX_ALLTECH_AUTH_RETRIES + 1):
             try:
@@ -115,6 +176,11 @@ class PlayDownloader:
         if last_error is None:
             raise CommandError("alltech-gplay failed without raising")
         raise last_error
+
+    @staticmethod
+    def _is_alltech_availability_error(text: str) -> bool:
+        lowered = text.lower()
+        return any(marker in lowered for marker in ALLTECH_AVAILABILITY_MARKERS)
 
     @staticmethod
     def _is_alltech_auth_error(text: str) -> bool:
@@ -151,7 +217,9 @@ class PlayDownloader:
                 f"alltech-gplay auth ناموفق بود؛ {auth_file} ساخته نشد. NIXFILE یا alltech تنظیمات را بررسی کن."
             )
 
-    def _alltech_args(self, package_name: str, output_dir: Path) -> list[str]:
+    def _alltech_args(
+        self, package_name: str, output_dir: Path, arch: str | None = None
+    ) -> list[str]:
         gplay_path = self._settings.alltech_gplay_path
         if not gplay_path.exists():
             raise DownloadError(f"فایل gplay پیدا نشد: {gplay_path}")
@@ -161,7 +229,7 @@ class PlayDownloader:
             "download",
             package_name,
             "-a",
-            self._settings.play_arch,
+            arch or self._settings.play_arch,
             "-o",
             str(output_dir),
         ]
