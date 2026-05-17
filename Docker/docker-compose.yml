@@ -1,0 +1,47 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - playdl
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  bot:
+    build:
+      context: ..
+      dockerfile: Docker/Dockerfile
+    image: playdl:latest
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      MONGODB_URI: mongodb://mongo:27017
+      MONGODB_DB_NAME: playdl
+    volumes:
+      - downloads:/app/storage/downloads
+      - tools:/app/tools
+      - nixfile_session:/app/storage
+      - alltech_auth:/root
+    shm_size: "2gb"
+    networks:
+      - playdl
+
+volumes:
+  mongo_data:
+  downloads:
+  tools:
+  nixfile_session:
+  alltech_auth:
+
+networks:
+  playdl:
+    driver: bridge

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "playdl"
-version = "0.1.0"
-description = "Persian Telegram bot for downloading Google Play apps and uploading APK files."
+version = "1.2.0"
+description = "Telegram bot for downloading Google Play apps and uploading APK files."
 requires-python = ">=3.13"
 dependencies = [
     "aiogram>=3.28,<3.29",
