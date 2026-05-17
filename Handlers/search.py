@@ -1,3 +1,4 @@
+from contextlib import suppress
 from typing import Any
 
 from aiogram import F, Router
@@ -16,7 +17,6 @@ from Utils.texts import (
     CANCELLED_TEXT,
     SEARCH_EMPTY_TEXT,
     SEARCH_FAILED_TEXT,
-    SEARCH_PICKED_TEXT,
     SEARCH_PROMPT_TEXT,
     SEARCH_RESULTS_TEXT,
     USER_BUSY_TEXT,
@@ -40,12 +40,21 @@ class SearchStartCallback(CallbackQueryHandler):
         state: FSMContext = self.data["state"]
         await state.set_state(SearchStates.waiting_query)
 
+        prompt_message = None
         try:
-            await self.message.edit_text(
+            prompt_message = await self.message.edit_text(
                 SEARCH_PROMPT_TEXT, reply_markup=cancel_keyboard()
             )
         except TelegramBadRequest:
-            await self.message.answer(SEARCH_PROMPT_TEXT, reply_markup=cancel_keyboard())
+            prompt_message = await self.message.answer(
+                SEARCH_PROMPT_TEXT, reply_markup=cancel_keyboard()
+            )
+
+        if prompt_message is not None:
+            await state.update_data(
+                prompt_chat_id=prompt_message.chat.id,
+                prompt_message_id=prompt_message.message_id,
+            )
 
 
 @router.callback_query(StateFilter(SearchStates.waiting_query), F.data == "cancel")
@@ -73,7 +82,14 @@ class SearchQueryHandler(MessageHandler):
             await self.event.answer(SEARCH_PROMPT_TEXT, reply_markup=cancel_keyboard())
             return
 
+        data = await state.get_data()
         await state.clear()
+
+        prompt_chat_id = data.get("prompt_chat_id")
+        prompt_message_id = data.get("prompt_message_id")
+        if prompt_chat_id and prompt_message_id:
+            with suppress(TelegramBadRequest):
+                await self.event.bot.delete_message(prompt_chat_id, prompt_message_id)
 
         try:
             results = await search_apps(query)
@@ -114,18 +130,16 @@ class SearchPickCallback(CallbackQueryHandler):
             await self.message.edit_text(BUSY_TEXT, reply_markup=main_keyboard())
             return
 
-        try:
-            await self.message.edit_text(
-                SEARCH_PICKED_TEXT.format(package=safe(package))
-            )
-        except TelegramBadRequest:
-            pass
-
+        results_message = self.message
         url = build_play_url(package)
+
+        with suppress(TelegramBadRequest):
+            await results_message.delete()
+
         await job_runner.run(
             self.from_user.id,
             run_download_pipeline(
-                event_message=self.message,
+                event_message=results_message,
                 user_id=self.from_user.id,
                 url=url,
                 package_name=package,
