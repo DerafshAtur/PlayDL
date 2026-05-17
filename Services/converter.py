@@ -32,12 +32,24 @@ class ApksConverter:
 
     async def _merge_directory(self, source_dir: Path) -> Path:
         apk_files = sorted(source_dir.rglob("*.apk"))
-        if len(apk_files) == 1:
-            return apk_files[0]
         if not apk_files:
             raise DownloadError("فایل APK داخل پوشه دانلود پیدا نشد.")
 
-        merged = [path for path in apk_files if "merged" in path.stem.lower()]
+        splits = [p for p in apk_files if "merged" not in p.stem.lower()]
+        base_apks = [p for p in splits if p.stem.lower() == "base"]
+        non_base = [p for p in splits if p.stem.lower() != "base"]
+
+        if base_apks and non_base:
+            splits_dir = base_apks[0].parent
+            output = source_dir / "merged.apk"
+            if output.exists():
+                output.unlink()
+            return await self._merge_input(splits_dir, output)
+
+        if len(apk_files) == 1:
+            return apk_files[0]
+
+        merged = [p for p in apk_files if "merged" in p.stem.lower()]
         if merged:
             return max(merged, key=lambda item: item.stat().st_mtime)
 
@@ -56,7 +68,11 @@ class ApksConverter:
             java = shutil.which("java")
             if not java:
                 raise DownloadError("Java پیدا نشد. برای APKEditor به Java 17+ نیاز است.")
-            command = f'"{java}" -jar "{apkeditor}" m -i "{input_path}" -o "{output_path}"'
+            command = (
+                f'"{java}" -jar "{apkeditor}" m '
+                f'-i "{input_path}" -o "{output_path}" '
+                f'-extractNativeLibs true -clean-meta -f'
+            )
 
         try:
             await run_command(command)

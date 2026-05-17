@@ -165,8 +165,6 @@ class PlayDownloader:
             "-o",
             str(output_dir),
         ]
-        if self._settings.merge_splits:
-            args.append("-m")
 
         if gplay_path.suffix.lower() == ".py":
             return [sys.executable, *args]
