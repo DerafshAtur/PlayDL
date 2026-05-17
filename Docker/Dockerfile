@@ -57,7 +57,8 @@ RUN pip install --upgrade pip setuptools wheel \
         "pydantic-settings>=2.9,<3" \
         "python-dotenv>=1.1,<2" \
         "aiohttp" \
-        "selenium>=4.20"
+        "selenium>=4.20" \
+        "google-play-scraper>=1.2,<2"
 
 COPY . .
 

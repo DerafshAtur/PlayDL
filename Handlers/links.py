@@ -8,26 +8,22 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.handlers import CallbackQueryHandler, MessageHandler
 from aiogram.types import FSInputFile
 
-from Services.downloader import DownloadError
 from Services.extract import extract_package_name, is_google_play_url
 from Services.nixfile import NixfileError
+from Services.pipeline import run_download_pipeline
 from Services.sweeper import is_nixfile_url_alive
 from Utils.html import bold, safe
 from Utils.keyboards import (
     cancel_keyboard,
-    delivery_keyboard,
     link_keyboard,
     main_keyboard,
 )
-from Utils.progress import AnimatedProgress, DiskSizeProgress, SnapshotProgress
+from Utils.progress import AnimatedProgress, SnapshotProgress
 from Utils.texts import (
     BAD_LINK_TEXT,
     BUSY_TEXT,
     CANCELLED_TEXT,
-    CONVERTING_TEXT,
-    DELIVERY_PROMPT_TEXT,
     DONE_TEXT,
-    DOWNLOAD_TITLE,
     FAILED_TEXT,
     JOB_NOT_FOUND_TEXT,
     LINK_READY_TEXT,
@@ -91,78 +87,16 @@ class GooglePlayLinkHandler(MessageHandler):
             await self.event.answer(BUSY_TEXT, reply_markup=main_keyboard())
             return
 
-        await job_runner.run(self.from_user.id, self._process(text, package_name))
-
-    async def _process(self, url: str, package_name: str) -> None:
-        db = self.data["db"]
-        downloader = self.data["downloader"]
-        converter = self.data["converter"]
-        settings = self.data["settings"]
-
-        job_id = await db.create_job(self.from_user.id, package_name, url)
-        package_label = bold(package_name)
-
-        cache = await db.get_package_cache(package_name)
-        cached_apk = None
-        if cache and cache.get("apk_path"):
-            candidate = Path(cache["apk_path"])
-            if candidate.exists():
-                cached_apk = candidate
-
-        if cached_apk is not None:
-            status_message = await self.event.answer(
-                f"{DOWNLOAD_TITLE}\n\n{package_label}\n\n♻️ از کش استفاده شد"
-            )
-            await db.update_job(
-                job_id, "ready", source_path=str(cached_apk), apk_path=str(cached_apk)
-            )
-            await status_message.edit_text(
-                DELIVERY_PROMPT_TEXT, reply_markup=delivery_keyboard(job_id)
-            )
-            return
-
-        status_message = await self.event.answer(
-            f"{DOWNLOAD_TITLE}\n\n{package_label}\n\n📥 0 B  •  0 B/s"
+        await job_runner.run(
+            self.from_user.id,
+            run_download_pipeline(
+                event_message=self.event,
+                user_id=self.from_user.id,
+                url=text,
+                package_name=package_name,
+                deps=self.data,
+            ),
         )
-
-        download_dir = settings.download_dir / str(job_id)
-        download_dir.mkdir(parents=True, exist_ok=True)
-        download_progress: DiskSizeProgress | None = None
-
-        try:
-            download_progress = DiskSizeProgress(
-                status_message, DOWNLOAD_TITLE, package_label, download_dir
-            )
-            download_progress.start()
-            source_path = await downloader.download(url=url, package_name=package_name, job_id=job_id)
-            await download_progress.stop()
-            download_progress = None
-            await db.update_job(job_id, "downloaded", source_path=str(source_path))
-
-            await status_message.edit_text(CONVERTING_TEXT)
-            apk_path = await converter.to_apk(source_path)
-            await db.update_job(job_id, "ready", apk_path=str(apk_path))
-            await db.set_package_apk(package_name, str(apk_path))
-
-            await status_message.edit_text(
-                DELIVERY_PROMPT_TEXT, reply_markup=delivery_keyboard(job_id)
-            )
-        except DownloadError as exc:
-            if download_progress:
-                await download_progress.stop()
-            await db.update_job(job_id, "failed", error=str(exc))
-            await status_message.edit_text(
-                FAILED_TEXT.format(error=safe(exc)),
-                reply_markup=main_keyboard(),
-            )
-        except Exception as exc:
-            if download_progress:
-                await download_progress.stop()
-            await db.update_job(job_id, "failed", error=str(exc))
-            await status_message.edit_text(
-                FAILED_TEXT.format(error=safe(exc)),
-                reply_markup=main_keyboard(),
-            )
 
 
 @router.callback_query(F.data.startswith("deliver:"))

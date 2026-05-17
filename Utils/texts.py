@@ -32,3 +32,9 @@ NIXFILE_TOO_BIG_TEXT = (
 USER_BUSY_TEXT = (
     "یک درخواست از طرف شما در حال پردازش است. لطفاً صبر کن تا تموم بشه."
 )
+
+SEARCH_PROMPT_TEXT = "نام برنامه را برای جستجو در گوگل پلی بفرست:"
+SEARCH_EMPTY_TEXT = "چیزی پیدا نشد. عبارت دیگری امتحان کن."
+SEARCH_FAILED_TEXT = "جستجو ناموفق بود:\n{error}"
+SEARCH_RESULTS_TEXT = "نتایج جستجو برای «{query}»:\nیکی را انتخاب کن تا دانلود شود."
+SEARCH_PICKED_TEXT = "انتخاب شد:\n{package}"

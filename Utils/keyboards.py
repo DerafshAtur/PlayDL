@@ -5,8 +5,23 @@ def main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📥 ارسال لینک گوگل پلی", callback_data="send_link")],
+            [InlineKeyboardButton(text="🔍 جستجوی اپ", callback_data="search_app")],
         ]
     )
+
+
+def search_results_keyboard(items: list[dict]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in items:
+        title = item.get("title", "").strip()
+        developer = item.get("developer", "").strip()
+        label = title if not developer else f"{title} — {developer}"
+        label = label[:60]
+        rows.append(
+            [InlineKeyboardButton(text=label, callback_data=f"pick:{item['package']}")]
+        )
+    rows.append([InlineKeyboardButton(text="لغو", callback_data="cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def cancel_keyboard() -> InlineKeyboardMarkup:
