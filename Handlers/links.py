@@ -1,12 +1,20 @@
 import asyncio
+import logging
 import threading
 from pathlib import Path
 from typing import Any
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+    TelegramServerError,
+)
 from aiogram.handlers import CallbackQueryHandler, MessageHandler
 from aiogram.types import FSInputFile
+
+logger = logging.getLogger(__name__)
 
 from Services.extract import extract_package_name, is_google_play_url
 from Services.nixfile import NixfileError
@@ -15,6 +23,7 @@ from Services.sweeper import is_nixfile_url_alive
 from Utils.html import bold, safe
 from Utils.keyboards import (
     cancel_keyboard,
+    delivery_keyboard,
     link_keyboard,
     main_keyboard,
 )
@@ -138,7 +147,7 @@ class DeliveryCallback(CallbackQueryHandler):
                 if used >= limit:
                     await self.message.edit_text(
                         NIXFILE_QUOTA_TEXT.format(limit=limit),
-                        reply_markup=main_keyboard(),
+                        reply_markup=delivery_keyboard(job_id),
                     )
                     return
             max_mb = int(getattr(settings, "nixfile_max_file_mb", 0) or 0)
@@ -147,7 +156,7 @@ class DeliveryCallback(CallbackQueryHandler):
                 if size_mb > max_mb:
                     await self.message.edit_text(
                         NIXFILE_TOO_BIG_TEXT.format(size_mb=size_mb, limit_mb=max_mb),
-                        reply_markup=main_keyboard(),
+                        reply_markup=delivery_keyboard(job_id),
                     )
                     return
             await self._deliver_nixfile(job_id, apk_path, package_label, package_name)
@@ -158,21 +167,19 @@ class DeliveryCallback(CallbackQueryHandler):
         self, job_id: int, apk_path: Path, package_label: str
     ) -> None:
         db = self.data["db"]
+        settings = self.data["settings"]
         status_message = self.message
         if status_message is None:
             return
 
         upload_progress = AnimatedProgress(status_message, UPLOAD_TITLE, package_label)
+        max_attempts = int(getattr(settings, "telegram_upload_retries", 4) or 4)
         try:
             await status_message.edit_text(
                 AnimatedProgress.render(UPLOAD_TITLE, package_label, 6)
             )
             upload_progress.start()
-            await self.event.message.answer_document(
-                document=FSInputFile(apk_path, filename=apk_path.name),
-                caption=DONE_TEXT.format(package=package_label),
-                reply_markup=main_keyboard(),
-            )
+            await self._send_document_with_retry(apk_path, package_label, max_attempts)
             await upload_progress.stop(percent=100)
             await status_message.delete()
             await db.set_job_delivery(job_id, "telegram")
@@ -182,8 +189,57 @@ class DeliveryCallback(CallbackQueryHandler):
             await db.update_job(job_id, "failed", error=str(exc))
             await status_message.edit_text(
                 FAILED_TEXT.format(error=safe(exc)),
-                reply_markup=main_keyboard(),
+                reply_markup=delivery_keyboard(job_id),
             )
+
+    async def _send_document_with_retry(
+        self, apk_path: Path, package_label: str, max_attempts: int
+    ) -> None:
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await self.event.message.answer_document(
+                    document=FSInputFile(apk_path, filename=apk_path.name),
+                    caption=DONE_TEXT.format(package=package_label),
+                    reply_markup=main_keyboard(),
+                )
+                if attempt > 1:
+                    logger.info(
+                        "telegram upload succeeded on attempt %d/%d (%s)",
+                        attempt,
+                        max_attempts,
+                        apk_path.name,
+                    )
+                return
+            except TelegramRetryAfter as exc:
+                last_exc = exc
+                delay = max(1, int(exc.retry_after))
+                logger.warning(
+                    "telegram flood wait: sleeping %ds before retry %d/%d",
+                    delay,
+                    attempt + 1,
+                    max_attempts,
+                )
+                if attempt >= max_attempts:
+                    break
+                await asyncio.sleep(delay)
+            except (TelegramNetworkError, TelegramServerError, asyncio.TimeoutError) as exc:
+                last_exc = exc
+                if attempt >= max_attempts:
+                    break
+                delay = min(30, 2 ** (attempt - 1) * 3)
+                logger.warning(
+                    "telegram upload attempt %d/%d failed (%s: %s); retrying in %ds",
+                    attempt,
+                    max_attempts,
+                    exc.__class__.__name__,
+                    exc,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+        if last_exc is None:
+            raise RuntimeError("telegram upload failed without exception")
+        raise last_exc
 
     async def _deliver_nixfile(
         self,

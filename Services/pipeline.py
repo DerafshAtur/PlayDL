@@ -1,8 +1,11 @@
+import logging
 from pathlib import Path
 
 from aiogram.types import Message
 
 from Services.downloader import DownloadError
+from Services.search import fetch_app_title
+from Utils.filename import sanitize_filename_stem
 from Utils.html import bold, safe
 from Utils.keyboards import delivery_keyboard, main_keyboard
 from Utils.progress import DiskSizeProgress
@@ -12,6 +15,24 @@ from Utils.texts import (
     DOWNLOAD_TITLE,
     FAILED_TEXT,
 )
+
+logger = logging.getLogger(__name__)
+
+
+async def _rename_apk_for_app(apk_path: Path, package_name: str) -> Path:
+    title = await fetch_app_title(package_name)
+    stem = sanitize_filename_stem(title or package_name, fallback=package_name)
+    target = apk_path.with_name(f"{stem}.apk")
+    if target == apk_path:
+        return apk_path
+    try:
+        if target.exists():
+            target.unlink()
+        apk_path.rename(target)
+    except OSError as exc:
+        logger.warning("rename %s -> %s failed: %s", apk_path, target, exc)
+        return apk_path
+    return target
 
 
 async def run_download_pipeline(
@@ -38,6 +59,8 @@ async def run_download_pipeline(
             cached_apk = candidate
 
     if cached_apk is not None:
+        cached_apk = await _rename_apk_for_app(cached_apk, package_name)
+        await db.set_package_apk(package_name, str(cached_apk))
         status_message = await event_message.answer(
             f"{DOWNLOAD_TITLE}\n\n{package_label}\n\n♻️ از کش استفاده شد"
         )
@@ -69,6 +92,7 @@ async def run_download_pipeline(
 
         await status_message.edit_text(CONVERTING_TEXT)
         apk_path = await converter.to_apk(source_path)
+        apk_path = await _rename_apk_for_app(apk_path, package_name)
         await db.update_job(job_id, "ready", apk_path=str(apk_path))
         await db.set_package_apk(package_name, str(apk_path))
 

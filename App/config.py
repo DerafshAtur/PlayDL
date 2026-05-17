@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     bot_token: str = Field(alias="BOT_TOKEN")
     telegram_api_base_url: str = Field(default="https://api.telegram.org", alias="TELEGRAM_API_BASE_URL")
     telegram_api_is_local: bool = Field(default=False, alias="TELEGRAM_API_IS_LOCAL")
+    telegram_upload_timeout: int = Field(default=900, ge=30, alias="TELEGRAM_UPLOAD_TIMEOUT")
+    telegram_upload_retries: int = Field(default=4, ge=1, le=10, alias="TELEGRAM_UPLOAD_RETRIES")
 
     mongodb_uri: str = Field(default="mongodb://localhost:27017", alias="MONGODB_URI")
     mongodb_db_name: str = Field(default="playdl", alias="MONGODB_DB_NAME")

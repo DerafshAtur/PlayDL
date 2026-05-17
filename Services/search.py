@@ -1,6 +1,7 @@
 import asyncio
 import logging
 
+from google_play_scraper import app as gp_app
 from google_play_scraper import search as gp_search
 
 logger = logging.getLogger(__name__)
@@ -54,3 +55,28 @@ async def search_apps(
 
 def build_play_url(package: str) -> str:
     return f"https://play.google.com/store/apps/details?id={package}"
+
+
+def _sync_app(package: str, lang: str, country: str) -> dict:
+    return gp_app(package, lang=lang, country=country) or {}
+
+
+async def fetch_app_title(
+    package: str,
+    lang: str = DEFAULT_LANG,
+    country: str = DEFAULT_COUNTRY,
+) -> str | None:
+    package = (package or "").strip()
+    if not package:
+        return None
+    try:
+        info = await asyncio.to_thread(_sync_app, package, lang, country)
+    except Exception as exc:
+        logger.warning("google play app() failed for %s: %s", package, exc)
+        return None
+    title = info.get("title")
+    if not isinstance(title, str):
+        return None
+    title = title.strip()
+    return title or None
+

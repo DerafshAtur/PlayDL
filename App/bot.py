@@ -12,7 +12,8 @@ def create_bot(settings: Settings) -> Bot:
         api=TelegramAPIServer.from_base(
             settings.telegram_api_base_url,
             is_local=settings.telegram_api_is_local,
-        )
+        ),
+        timeout=settings.telegram_upload_timeout,
     )
     return Bot(
         token=settings.bot_token,
