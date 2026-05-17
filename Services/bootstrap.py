@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import platform
 import shutil
 import stat
 import sys
@@ -14,6 +15,7 @@ from Services.downloader import DownloadError
 ALLTECH_REPO_URL = "https://github.com/alltechdev/gplay-apk-downloader.git"
 APKEDITOR_RELEASE_API = "https://api.github.com/repos/REAndroid/APKEditor/releases/latest"
 APKSIGNER_RELEASE_API = "https://api.github.com/repos/patrickfav/uber-apk-signer/releases/latest"
+APKEEP_RELEASE_API = "https://api.github.com/repos/EFForg/apkeep/releases/latest"
 logger = logging.getLogger(__name__)
 
 
@@ -26,10 +28,11 @@ async def ensure_tools(settings: Settings) -> None:
     logger.info("Checking downloader tools for backend=%s", backend)
     if backend in {"auto", "alltech-gplay"}:
         await _ensure_alltech(settings)
+        await _ensure_apkeep(settings)
     elif backend == "gplaydl":
         await _ensure_gplaydl()
     elif backend == "apkeep":
-        await _ensure_apkeep()
+        await _ensure_apkeep(settings)
 
     if _needs_apkeditor(settings):
         await _ensure_apkeditor(settings.apkeditor_jar)
@@ -120,14 +123,83 @@ async def _ensure_gplaydl() -> None:
     await _install_python_packages(["gplaydl>=2.1,<3"])
 
 
-async def _ensure_apkeep() -> None:
-    if shutil.which("apkeep"):
-        logger.info("apkeep found")
+async def _ensure_apkeep(settings) -> None:
+    binary_path = settings.apkeep_path
+    if binary_path.exists():
+        logger.info("apkeep found: %s", binary_path)
         return
-    if not shutil.which("cargo"):
-        raise DownloadError("apkeep پیدا نشد. برای نصب خودکار آن Rust/Cargo لازم است.")
-    logger.info("Installing apkeep with cargo")
-    await run_process(["cargo", "install", "apkeep"], timeout=1800)
+    if shutil.which("apkeep"):
+        logger.info("apkeep found on PATH")
+        return
+
+    asset_name = _apkeep_asset_name()
+    if asset_name is None:
+        logger.warning(
+            "apkeep auto-install unsupported on platform=%s machine=%s; install manually if you need fallback",
+            platform.system(),
+            platform.machine(),
+        )
+        return
+
+    binary_path.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("Resolving apkeep release asset %s", asset_name)
+    try:
+        url = await _find_apkeep_asset_url(asset_name)
+    except Exception as exc:
+        logger.warning("apkeep release lookup failed: %s", exc)
+        return
+
+    logger.info("Downloading apkeep binary from %s", url)
+    try:
+        await _download_file(url, binary_path)
+    except Exception as exc:
+        logger.warning("apkeep binary download failed: %s", exc)
+        return
+
+    if os.name != "nt":
+        mode = binary_path.stat().st_mode
+        binary_path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    logger.info("apkeep ready: %s", binary_path)
+
+
+def _apkeep_asset_name() -> str | None:
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    if system == "linux":
+        if machine in {"x86_64", "amd64"}:
+            return "apkeep-x86_64-unknown-linux-gnu"
+        if machine in {"aarch64", "arm64"}:
+            return "apkeep-aarch64-unknown-linux-gnu"
+        return None
+    if system == "darwin":
+        if machine in {"arm64", "aarch64"}:
+            return "apkeep-aarch64-apple-darwin"
+        if machine in {"x86_64", "amd64"}:
+            return "apkeep-x86_64-apple-darwin"
+        return None
+    if system == "windows":
+        if machine in {"x86_64", "amd64"}:
+            return "apkeep-x86_64-pc-windows-msvc.exe"
+        return None
+    return None
+
+
+async def _find_apkeep_asset_url(asset_name: str) -> str:
+    def fetch() -> str:
+        request = urllib.request.Request(
+            APKEEP_RELEASE_API,
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "PlayDL"},
+        )
+        with urllib.request.urlopen(request, timeout=60) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        for asset in payload.get("assets", []):
+            if asset.get("name") == asset_name and asset.get("browser_download_url"):
+                return asset["browser_download_url"]
+        raise DownloadError(f"apkeep asset {asset_name} در release پیدا نشد.")
+
+    import asyncio
+
+    return await asyncio.to_thread(fetch)
 
 
 async def _install_python_packages(args: list[str], python_path: Path | None = None) -> None:

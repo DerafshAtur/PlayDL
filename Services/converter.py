@@ -36,11 +36,17 @@ class ApksConverter:
             raise DownloadError("فایل APK داخل پوشه دانلود پیدا نشد.")
 
         splits = [p for p in apk_files if "merged" not in p.stem.lower()]
-        base_apks = [p for p in splits if p.stem.lower() == "base"]
-        non_base = [p for p in splits if p.stem.lower() != "base"]
+        split_files = [
+            p for p in splits if p.stem.lower().startswith(("config.", "split_", "split."))
+        ]
+        candidate_bases = [p for p in splits if p not in split_files]
 
-        if base_apks and non_base:
-            splits_dir = base_apks[0].parent
+        if split_files and candidate_bases:
+            base = next(
+                (p for p in candidate_bases if p.stem.lower() == "base"),
+                candidate_bases[0],
+            )
+            splits_dir = base.parent
             output = source_dir / "merged.apk"
             if output.exists():
                 output.unlink()

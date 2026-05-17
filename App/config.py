@@ -30,7 +30,9 @@ class Settings(BaseSettings):
     alltech_auth_file: Path = Field(default=Path("~/.gplay-auth.json"), alias="ALLTECH_AUTH_FILE")
     play_arch: str = Field(default="arm64", alias="PLAY_ARCH")
     merge_splits: bool = Field(default=True, alias="MERGE_SPLITS")
+    apkeep_path: Path = Field(default=Path("tools/apkeep"), alias="APKEEP_PATH")
     apkeep_source: str | None = Field(default=None, alias="APKEEP_SOURCE")
+    apkeep_fallback_source: str = Field(default="apk-pure", alias="APKEEP_FALLBACK_SOURCE")
     apkeep_email: str | None = Field(default=None, alias="APKEEP_EMAIL")
     apkeep_token: str | None = Field(default=None, alias="APKEEP_TOKEN")
 

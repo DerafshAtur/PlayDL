@@ -1,6 +1,7 @@
 import logging
 import shutil
 import sys
+import zipfile
 from contextlib import suppress
 from pathlib import Path
 from string import Formatter
@@ -147,10 +148,49 @@ class PlayDownloader:
                     return
                 except CommandError as exc:
                     last_error = exc
+                    availability_seen = availability_seen or self._is_alltech_availability_error(
+                        str(exc)
+                    )
+
+            if availability_seen and self._apkeep_available():
+                logger.warning(
+                    "alltech-gplay cannot deliver %s; falling back to apkeep (APKPure)",
+                    package_name,
+                )
+                try:
+                    await self._apkeep_fallback(package_name, output_dir)
+                    return
+                except CommandError as exc:
+                    last_error = exc
 
         if last_error is None:
             raise CommandError("alltech-gplay failed without raising")
         raise last_error
+
+    def _apkeep_available(self) -> bool:
+        if self._settings.apkeep_path.exists():
+            return True
+        return shutil.which("apkeep") is not None
+
+    def _apkeep_binary(self) -> str:
+        binary = self._settings.apkeep_path
+        if binary.exists():
+            return str(binary)
+        located = shutil.which("apkeep")
+        if located:
+            return located
+        raise CommandError("apkeep پیدا نشد.")
+
+    async def _apkeep_fallback(self, package_name: str, output_dir: Path) -> None:
+        source = (self._settings.apkeep_fallback_source or "apk-pure").strip().lower()
+        args = [self._apkeep_binary(), "-a", package_name, "-d", source]
+        if source == "google-play":
+            if self._settings.apkeep_email:
+                args.extend(["-e", self._settings.apkeep_email])
+            if self._settings.apkeep_token:
+                args.extend(["-t", self._settings.apkeep_token])
+        args.append(str(output_dir))
+        await run_process(args)
 
     async def _alltech_run_with_auth_retry(
         self, package_name: str, output_dir: Path, arch: str
@@ -251,6 +291,17 @@ class PlayDownloader:
 
     @staticmethod
     def _select_download_result(output_dir: Path) -> Path:
+        xapk_files = [
+            path
+            for path in output_dir.rglob("*")
+            if path.is_file() and path.suffix.lower() == ".xapk"
+        ]
+        for xapk in xapk_files:
+            try:
+                PlayDownloader._extract_xapk(xapk)
+            except Exception as exc:
+                logger.warning("xapk extract failed for %s: %s", xapk, exc)
+
         candidates = [
             path
             for path in output_dir.rglob("*")
@@ -278,6 +329,16 @@ class PlayDownloader:
             return output_dir
 
         return max(candidates, key=lambda item: item.stat().st_mtime)
+
+    @staticmethod
+    def _extract_xapk(xapk_path: Path) -> None:
+        target_dir = xapk_path.with_suffix("")
+        if target_dir.exists() and any(target_dir.iterdir()):
+            return
+        target_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(xapk_path) as zf:
+            zf.extractall(target_dir)
+        logger.info("xapk extracted: %s -> %s", xapk_path.name, target_dir)
 
     @staticmethod
     def _render(template: str, **values: str) -> str:
