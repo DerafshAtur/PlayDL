@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import threading
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,15 @@ from Utils.texts import (
 )
 
 router = Router(name="links")
+
+
+def _maybe_delete_after_upload(settings, apk_path: Path) -> None:
+    if getattr(settings, "keep_files", True):
+        return
+    with suppress(Exception):
+        if apk_path.exists():
+            apk_path.unlink()
+            logger.info("KEEP_FILES=false, deleted %s after upload", apk_path)
 
 
 @router.callback_query(F.data == "send_link")
@@ -184,6 +194,7 @@ class DeliveryCallback(CallbackQueryHandler):
             await status_message.delete()
             await db.set_job_delivery(job_id, "telegram")
             await db.update_job(job_id, "done")
+            _maybe_delete_after_upload(settings, apk_path)
         except Exception as exc:
             await upload_progress.stop()
             await db.update_job(job_id, "failed", error=str(exc))
@@ -302,6 +313,7 @@ class DeliveryCallback(CallbackQueryHandler):
             await db.set_package_nixfile(package_name, url)
             await db.set_job_delivery(job_id, "nixfile")
             await db.update_job(job_id, "done")
+            _maybe_delete_after_upload(self.data["settings"], apk_path)
         except NixfileError as exc:
             watcher.cancel()
             if progress_started:

@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     limit_daily_ir: int = Field(default=0, ge=0, alias="LIMIT_DAILY_IR")
 
     downloads_max_mb: int = Field(default=500, ge=1, alias="DOWNLOADS_MAX_MB")
+    keep_files: bool = Field(default=True, alias="KEEP_FILES")
+    rar_path: str = Field(default="rar", alias="RAR_PATH")
     downloads_sweep_interval_s: int = Field(default=3600, ge=60, alias="DOWNLOADS_SWEEP_INTERVAL_S")
     nixfile_link_check_interval_s: int = Field(default=21600, ge=60, alias="NIXFILE_LINK_CHECK_INTERVAL_S")
     nixfile_max_file_mb: int = Field(default=100, ge=1, alias="NIXFILE_MAX_FILE_MB")

@@ -33,6 +33,17 @@ USER_BUSY_TEXT = (
     "یک درخواست از طرف شما در حال پردازش است. لطفاً صبر کن تا تموم بشه."
 )
 
+FILE2LINK_PROMPT_TEXT = (
+    "فایل مورد نظر را ارسال کن.\n"
+    "اگر بزرگ‌تر از {limit_mb} مگابایت باشد، به‌صورت rar فشرده و در صورت لزوم به چند بخش تقسیم می‌شود."
+)
+FILE2LINK_NO_FILE_TEXT = "لطفاً یک فایل (Document) ارسال کن."
+FILE2LINK_DOWNLOADING_TEXT = "در حال دریافت فایل از تلگرام..."
+FILE2LINK_PACKAGING_TEXT = "در حال فشرده‌سازی/تقسیم فایل با rar..."
+FILE2LINK_UPLOADING_TEXT = "در حال آپلود به نیکس‌فایل ({index}/{total})..."
+FILE2LINK_READY_SINGLE_TEXT = "لینک آماده شد ✅\n{name}"
+FILE2LINK_READY_MULTI_TEXT = "لینک‌ها آماده شدند ✅\n{name}\n{count} بخش"
+
 SEARCH_PROMPT_TEXT = "نام برنامه را برای جستجو در گوگل پلی بفرست:"
 SEARCH_EMPTY_TEXT = "چیزی پیدا نشد. عبارت دیگری امتحان کن."
 SEARCH_FAILED_TEXT = "جستجو ناموفق بود:\n{error}"

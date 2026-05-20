@@ -6,6 +6,7 @@ def main_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="📥 ارسال لینک گوگل پلی", callback_data="send_link")],
             [InlineKeyboardButton(text="🔍 جستجوی اپ", callback_data="search_app")],
+            [InlineKeyboardButton(text="🔗 فایل به لینک", callback_data="file2link")],
         ]
     )
 
@@ -49,3 +50,13 @@ def link_keyboard(url: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="دانلود فایل", url=url)],
         ]
     )
+
+
+def multi_link_keyboard(urls: list[str]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if len(urls) == 1:
+        rows.append([InlineKeyboardButton(text="دانلود فایل", url=urls[0])])
+    else:
+        for index, url in enumerate(urls, start=1):
+            rows.append([InlineKeyboardButton(text=f"دانلود بخش {index}", url=url)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
