@@ -53,6 +53,15 @@ class Settings(BaseSettings):
         alias="NIXFILE_PANEL_URL",
     )
     nixfile_headless: bool = Field(default=True, alias="NIXFILE_HEADLESS")
+    nixfile_proxy: str | None = Field(default=None, alias="NIXFILE_PROXY")
+    nixfile_user_agent: str = Field(
+        default=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/130.0.0.0 Safari/537.36"
+        ),
+        alias="NIXFILE_USER_AGENT",
+    )
     nixfile_upload_timeout: int = Field(default=600, alias="NIXFILE_UPLOAD_TIMEOUT")
     nixfile_session_file: Path = Field(
         default=Path("storage/nixfile-session.json"),

@@ -137,7 +137,12 @@ class NixfileUploader:
         if self._driver is not None:
             return self._driver
 
-        logger.info("[nixfile] starting Chrome driver (headless=%s)", self._settings.nixfile_headless)
+        proxy = self._settings.nixfile_proxy or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+        logger.info(
+            "[nixfile] starting Chrome driver (headless=%s, proxy=%s)",
+            self._settings.nixfile_headless,
+            proxy or "none",
+        )
         options = Options()
         if self._settings.nixfile_headless:
             options.add_argument("--headless=new")
@@ -146,11 +151,26 @@ class NixfileUploader:
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1600,1000")
         options.add_argument("--lang=fa-IR")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument(f"--user-agent={self._settings.nixfile_user_agent}")
+        if proxy:
+            options.add_argument(f"--proxy-server={proxy}")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option("useAutomationExtension", False)
 
         self._driver = webdriver.Chrome(options=options)
         self._driver.set_page_load_timeout(60)
+        with suppress(Exception):
+            self._driver.execute_cdp_cmd(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {
+                    "source": (
+                        "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+                        "Object.defineProperty(navigator,'languages',{get:()=>['fa-IR','fa','en-US','en']});"
+                        "Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3,4,5]});"
+                    )
+                },
+            )
         return self._driver
 
     def _shutdown_sync(self) -> None:
@@ -177,6 +197,7 @@ class NixfileUploader:
         logger.info("[nixfile] navigating to login: %s", self._settings.nixfile_login_url)
         driver.get(self._settings.nixfile_login_url)
         logger.info("[nixfile] login page loaded url=%s title=%r", driver.current_url, driver.title)
+        self._assert_page_alive(driver, label="login")
 
         username_input = self._wait_visible(
             driver,
@@ -973,6 +994,28 @@ class NixfileUploader:
             last = tb[-1]
             msg = f"{exc.__class__.__name__}: {msg} (at {last.filename}:{last.lineno} in {last.name})"
         return msg
+
+    def _assert_page_alive(self, driver: WebDriver, label: str) -> None:
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            try:
+                body_len = driver.execute_script(
+                    "return (document.body && document.body.innerHTML || '').length;"
+                ) or 0
+                src_len = len(driver.page_source or "")
+            except Exception:
+                body_len = 0
+                src_len = 0
+            if body_len > 50 or src_len > 400:
+                logger.info(
+                    "[nixfile] %s page alive (body=%d, src=%d)", label, body_len, src_len
+                )
+                return
+            time.sleep(0.5)
+        raise NixfileError(
+            f"صفحه '{label}' خالی بارگذاری شد (احتمالاً پراکسی/فیلتر). "
+            f"NIXFILE_PROXY بررسی شود."
+        )
 
     @staticmethod
     def _wait_visible(
