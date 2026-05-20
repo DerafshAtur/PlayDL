@@ -138,55 +138,38 @@ class NixfileUploader:
             return self._driver
 
         proxy = (self._settings.nixfile_proxy or "").strip() or None
+        env_proxy = (
+            os.environ.get("HTTPS_PROXY")
+            or os.environ.get("https_proxy")
+            or os.environ.get("HTTP_PROXY")
+            or os.environ.get("http_proxy")
+        )
         logger.info(
-            "[nixfile] starting Chrome driver (headless=%s, proxy=%s)",
+            "[nixfile] starting Chrome driver (headless=%s, proxy=%s, env_proxy=%s)",
             self._settings.nixfile_headless,
             proxy or "none",
+            env_proxy or "none",
         )
         options = Options()
-        options.page_load_strategy = "eager"
         if self._settings.nixfile_headless:
-            options.add_argument("--headless=new")
+            options.add_argument("--headless")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1600,1000")
         options.add_argument("--lang=fa-IR")
-        options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--remote-allow-origins=*")
+        options.add_argument("--disable-features=VizDisplayCompositor,IsolateOrigins,site-per-process")
         if proxy:
             options.add_argument(f"--proxy-server={proxy}")
+        else:
+            options.add_argument("--no-proxy-server")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option("useAutomationExtension", False)
 
         self._driver = webdriver.Chrome(options=options)
         self._driver.set_page_load_timeout(45)
         return self._driver
-
-    def _safe_get(self, driver: WebDriver, url: str) -> None:
-        """Navigate, tolerating the Chrome 148 chromedriver regression that
-        raises 'Timed out receiving message from renderer' even when the page
-        actually finished loading."""
-        try:
-            driver.get(url)
-            return
-        except TimeoutException:
-            ready = ""
-            current = ""
-            with suppress(Exception):
-                ready = driver.execute_script("return document.readyState;") or ""
-            with suppress(Exception):
-                current = driver.current_url or ""
-            logger.warning(
-                "[nixfile] driver.get(%s) raised TimeoutException; readyState=%r url=%r — continuing",
-                url, ready, current,
-            )
-            if ready not in ("interactive", "complete"):
-                raise
-            if not current.startswith("http"):
-                raise
-            with suppress(Exception):
-                driver.execute_script("window.stop();")
 
     def _shutdown_sync(self) -> None:
         if self._driver is not None:
@@ -210,38 +193,31 @@ class NixfileUploader:
         password = self._settings.nixfile_pass or ""
 
         logger.info("[nixfile] navigating to login: %s", self._settings.nixfile_login_url)
-        self._safe_get(driver, self._settings.nixfile_login_url)
+        driver.get(self._settings.nixfile_login_url)
         logger.info("[nixfile] login page loaded url=%s title=%r", driver.current_url, driver.title)
-        self._assert_page_alive(driver, label="login")
 
-        username_input = self._wait_visible(
-            driver,
-            (
-                By.XPATH,
-                "//input[@type='text' or @type='email' or @type='tel' or "
-                "@name='username' or "
-                "contains(@placeholder,'موبایل') or contains(@placeholder,'ایمیل')]",
-            ),
-            timeout=30,
-            label="username_input",
+        wait = WebDriverWait(driver, 30)
+        login_button_xpath = "//button[normalize-space(.)='ورود به نیکس فایل']"
+
+        username_input = wait.until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, 'input[name="username"]'))
         )
-        self._react_set_value(driver, username_input, username)
+        username_input.clear()
+        username_input.send_keys(username)
         logger.info("[nixfile] username entered")
 
-        self._click_login_button(driver, label="username_submit")
+        wait.until(EC.element_to_be_clickable((By.XPATH, login_button_xpath))).click()
 
-        password_input = self._wait_visible(
-            driver,
-            (By.XPATH, "//input[@type='password']"),
-            timeout=30,
-            label="password_input",
+        password_input = wait.until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, 'input[name="password"]'))
         )
-        self._react_set_value(driver, password_input, password)
+        password_input.clear()
+        password_input.send_keys(password)
         logger.info("[nixfile] password entered")
 
-        self._click_login_button(driver, label="password_submit")
+        wait.until(EC.element_to_be_clickable((By.XPATH, login_button_xpath))).click()
 
-        WebDriverWait(driver, 45).until(lambda d: self._on_panel(d))
+        WebDriverWait(driver, 45).until(lambda d: "/auth/login" not in d.current_url)
         self._logged_in = True
         logger.info("[nixfile] logged in, current_url=%s", driver.current_url)
         self._save_session(driver)
@@ -372,65 +348,6 @@ class NixfileUploader:
                 continue
         return False
 
-    @staticmethod
-    def _react_set_value(driver: WebDriver, element: WebElement, value: str) -> None:
-        script = """
-            const el = arguments[0];
-            const value = arguments[1];
-            const proto = window.HTMLInputElement && window.HTMLInputElement.prototype;
-            const desc = proto && Object.getOwnPropertyDescriptor(proto, 'value');
-            const setter = desc && desc.set;
-            try { el.focus(); } catch (e) {}
-            if (setter) {
-                setter.call(el, '');
-                el.dispatchEvent(new Event('input', {bubbles: true}));
-                setter.call(el, value);
-            } else {
-                el.value = value;
-            }
-            el.dispatchEvent(new Event('input', {bubbles: true}));
-            el.dispatchEvent(new Event('change', {bubbles: true}));
-            try { el.blur(); } catch (e) {}
-        """
-        driver.execute_script(script, element, value)
-
-    def _click_login_button(self, driver: WebDriver, label: str) -> None:
-        candidates = [
-            (By.XPATH, "//button[contains(normalize-space(.), 'ورود به نیکس')]"),
-            (By.XPATH, "//button[contains(normalize-space(.), 'ادامه')]"),
-            (By.XPATH, "//button[@type='submit']"),
-        ]
-        for locator in candidates:
-            try:
-                WebDriverWait(driver, 8).until(
-                    lambda d, loc=locator: self._enabled_button(d, loc)
-                )
-            except TimeoutException:
-                continue
-            element = driver.find_element(*locator)
-            logger.info("[nixfile] clicking %s via %s", label, locator[1])
-            try:
-                element.click()
-            except WebDriverException:
-                driver.execute_script("arguments[0].click();", element)
-            return
-        raise NixfileError(f"دکمه ورود ({label}) پیدا نشد یا فعال نشد.")
-
-    @staticmethod
-    def _enabled_button(driver: WebDriver, locator: tuple[str, str]) -> WebElement | None:
-        elements = driver.find_elements(*locator)
-        for element in elements:
-            try:
-                if not element.is_displayed():
-                    continue
-                disabled_attr = element.get_attribute("disabled")
-                aria_disabled = element.get_attribute("aria-disabled")
-                if disabled_attr in (None, "false") and aria_disabled in (None, "false"):
-                    return element
-            except StaleElementReferenceException:
-                continue
-        return None
-
     def _do_upload(
         self,
         file_path: Path,
@@ -467,7 +384,7 @@ class NixfileUploader:
         target = self._settings.nixfile_panel_url.rstrip("/") + "/media"
         logger.info("[nixfile] navigating directly to %s", target)
         try:
-            self._safe_get(driver, target)
+            driver.get(target)
         except WebDriverException as exc:
             logger.warning("[nixfile] direct nav failed: %s; trying sidebar click", exc)
             self._click_sidebar_files(driver)
@@ -1010,38 +927,3 @@ class NixfileUploader:
             msg = f"{exc.__class__.__name__}: {msg} (at {last.filename}:{last.lineno} in {last.name})"
         return msg
 
-    def _assert_page_alive(self, driver: WebDriver, label: str) -> None:
-        deadline = time.monotonic() + 8
-        while time.monotonic() < deadline:
-            try:
-                body_len = driver.execute_script(
-                    "return (document.body && document.body.innerHTML || '').length;"
-                ) or 0
-                src_len = len(driver.page_source or "")
-            except Exception:
-                body_len = 0
-                src_len = 0
-            if body_len > 50 or src_len > 400:
-                logger.info(
-                    "[nixfile] %s page alive (body=%d, src=%d)", label, body_len, src_len
-                )
-                return
-            time.sleep(0.5)
-        raise NixfileError(
-            f"صفحه '{label}' خالی بارگذاری شد (احتمالاً پراکسی/فیلتر). "
-            f"NIXFILE_PROXY بررسی شود."
-        )
-
-    @staticmethod
-    def _wait_visible(
-        driver: WebDriver,
-        locator: tuple[str, str],
-        timeout: int = 20,
-        label: str = "",
-    ) -> WebElement:
-        try:
-            return WebDriverWait(driver, timeout).until(EC.visibility_of_element_located(locator))
-        except TimeoutException as exc:
-            raise NixfileError(
-                f"عنصر '{label or locator[1]}' در {timeout}s پیدا نشد."
-            ) from exc
