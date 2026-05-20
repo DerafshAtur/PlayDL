@@ -183,13 +183,13 @@ class NixfileUploader:
             (
                 By.XPATH,
                 "//input[@type='text' or @type='email' or @type='tel' or "
+                "@name='username' or "
                 "contains(@placeholder,'موبایل') or contains(@placeholder,'ایمیل')]",
             ),
             timeout=30,
             label="username_input",
         )
-        username_input.clear()
-        username_input.send_keys(username)
+        self._react_set_value(driver, username_input, username)
         logger.info("[nixfile] username entered")
 
         self._click_login_button(driver, label="username_submit")
@@ -200,8 +200,7 @@ class NixfileUploader:
             timeout=30,
             label="password_input",
         )
-        password_input.clear()
-        password_input.send_keys(password)
+        self._react_set_value(driver, password_input, password)
         logger.info("[nixfile] password entered")
 
         self._click_login_button(driver, label="password_submit")
@@ -337,6 +336,28 @@ class NixfileUploader:
                 continue
         return False
 
+    @staticmethod
+    def _react_set_value(driver: WebDriver, element: WebElement, value: str) -> None:
+        script = """
+            const el = arguments[0];
+            const value = arguments[1];
+            const proto = window.HTMLInputElement && window.HTMLInputElement.prototype;
+            const desc = proto && Object.getOwnPropertyDescriptor(proto, 'value');
+            const setter = desc && desc.set;
+            try { el.focus(); } catch (e) {}
+            if (setter) {
+                setter.call(el, '');
+                el.dispatchEvent(new Event('input', {bubbles: true}));
+                setter.call(el, value);
+            } else {
+                el.value = value;
+            }
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+            try { el.blur(); } catch (e) {}
+        """
+        driver.execute_script(script, element, value)
+
     def _click_login_button(self, driver: WebDriver, label: str) -> None:
         candidates = [
             (By.XPATH, "//button[contains(normalize-space(.), 'ورود به نیکس')]"),
@@ -345,13 +366,34 @@ class NixfileUploader:
         ]
         for locator in candidates:
             try:
-                element = WebDriverWait(driver, 5).until(EC.element_to_be_clickable(locator))
-                logger.info("[nixfile] clicking %s via %s", label, locator[1])
-                element.click()
-                return
+                WebDriverWait(driver, 8).until(
+                    lambda d, loc=locator: self._enabled_button(d, loc)
+                )
             except TimeoutException:
                 continue
-        raise NixfileError(f"دکمه ورود ({label}) پیدا نشد.")
+            element = driver.find_element(*locator)
+            logger.info("[nixfile] clicking %s via %s", label, locator[1])
+            try:
+                element.click()
+            except WebDriverException:
+                driver.execute_script("arguments[0].click();", element)
+            return
+        raise NixfileError(f"دکمه ورود ({label}) پیدا نشد یا فعال نشد.")
+
+    @staticmethod
+    def _enabled_button(driver: WebDriver, locator: tuple[str, str]) -> WebElement | None:
+        elements = driver.find_elements(*locator)
+        for element in elements:
+            try:
+                if not element.is_displayed():
+                    continue
+                disabled_attr = element.get_attribute("disabled")
+                aria_disabled = element.get_attribute("aria-disabled")
+                if disabled_attr in (None, "false") and aria_disabled in (None, "false"):
+                    return element
+            except StaleElementReferenceException:
+                continue
+        return None
 
     def _do_upload(
         self,
