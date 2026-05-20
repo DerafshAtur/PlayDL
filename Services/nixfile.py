@@ -153,6 +153,7 @@ class NixfileUploader:
         options.add_argument("--window-size=1600,1000")
         options.add_argument("--lang=fa-IR")
         options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--remote-allow-origins=*")
         if proxy:
             options.add_argument(f"--proxy-server={proxy}")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -161,6 +162,31 @@ class NixfileUploader:
         self._driver = webdriver.Chrome(options=options)
         self._driver.set_page_load_timeout(45)
         return self._driver
+
+    def _safe_get(self, driver: WebDriver, url: str) -> None:
+        """Navigate, tolerating the Chrome 148 chromedriver regression that
+        raises 'Timed out receiving message from renderer' even when the page
+        actually finished loading."""
+        try:
+            driver.get(url)
+            return
+        except TimeoutException:
+            ready = ""
+            current = ""
+            with suppress(Exception):
+                ready = driver.execute_script("return document.readyState;") or ""
+            with suppress(Exception):
+                current = driver.current_url or ""
+            logger.warning(
+                "[nixfile] driver.get(%s) raised TimeoutException; readyState=%r url=%r — continuing",
+                url, ready, current,
+            )
+            if ready not in ("interactive", "complete"):
+                raise
+            if not current.startswith("http"):
+                raise
+            with suppress(Exception):
+                driver.execute_script("window.stop();")
 
     def _shutdown_sync(self) -> None:
         if self._driver is not None:
@@ -184,7 +210,7 @@ class NixfileUploader:
         password = self._settings.nixfile_pass or ""
 
         logger.info("[nixfile] navigating to login: %s", self._settings.nixfile_login_url)
-        driver.get(self._settings.nixfile_login_url)
+        self._safe_get(driver, self._settings.nixfile_login_url)
         logger.info("[nixfile] login page loaded url=%s title=%r", driver.current_url, driver.title)
         self._assert_page_alive(driver, label="login")
 
@@ -441,7 +467,7 @@ class NixfileUploader:
         target = self._settings.nixfile_panel_url.rstrip("/") + "/media"
         logger.info("[nixfile] navigating directly to %s", target)
         try:
-            driver.get(target)
+            self._safe_get(driver, target)
         except WebDriverException as exc:
             logger.warning("[nixfile] direct nav failed: %s; trying sidebar click", exc)
             self._click_sidebar_files(driver)
