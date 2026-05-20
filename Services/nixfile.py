@@ -137,13 +137,14 @@ class NixfileUploader:
         if self._driver is not None:
             return self._driver
 
-        proxy = self._settings.nixfile_proxy or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+        proxy = (self._settings.nixfile_proxy or "").strip() or None
         logger.info(
             "[nixfile] starting Chrome driver (headless=%s, proxy=%s)",
             self._settings.nixfile_headless,
             proxy or "none",
         )
         options = Options()
+        options.page_load_strategy = "eager"
         if self._settings.nixfile_headless:
             options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
@@ -152,25 +153,13 @@ class NixfileUploader:
         options.add_argument("--window-size=1600,1000")
         options.add_argument("--lang=fa-IR")
         options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument(f"--user-agent={self._settings.nixfile_user_agent}")
         if proxy:
             options.add_argument(f"--proxy-server={proxy}")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option("useAutomationExtension", False)
 
         self._driver = webdriver.Chrome(options=options)
-        self._driver.set_page_load_timeout(60)
-        with suppress(Exception):
-            self._driver.execute_cdp_cmd(
-                "Page.addScriptToEvaluateOnNewDocument",
-                {
-                    "source": (
-                        "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
-                        "Object.defineProperty(navigator,'languages',{get:()=>['fa-IR','fa','en-US','en']});"
-                        "Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3,4,5]});"
-                    )
-                },
-            )
+        self._driver.set_page_load_timeout(45)
         return self._driver
 
     def _shutdown_sync(self) -> None:
