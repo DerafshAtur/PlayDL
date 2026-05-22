@@ -65,6 +65,15 @@ class RubikaDeliveryStates(StatesGroup):
 router = Router(name="links")
 
 
+async def _safe_edit_text(message, *args, **kwargs):
+    try:
+        return await message.edit_text(*args, **kwargs)
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc):
+            return None
+        raise
+
+
 def _maybe_delete_after_upload(settings, apk_path: Path) -> None:
     if getattr(settings, "keep_files", True):
         return
@@ -82,7 +91,7 @@ class SendLinkCallback(CallbackQueryHandler):
             return
 
         try:
-            await self.message.edit_text(SEND_LINK_TEXT, reply_markup=cancel_keyboard())
+            await _safe_edit_text(self.message,SEND_LINK_TEXT, reply_markup=cancel_keyboard())
         except TelegramBadRequest:
             await self.message.answer(SEND_LINK_TEXT, reply_markup=cancel_keyboard())
 
@@ -95,12 +104,12 @@ class CancelCallback(CallbackQueryHandler):
             return
 
         try:
-            await self.message.edit_text(CANCELLED_TEXT, reply_markup=main_keyboard())
+            await _safe_edit_text(self.message,CANCELLED_TEXT, reply_markup=main_keyboard())
         except TelegramBadRequest:
             await self.message.answer(CANCELLED_TEXT, reply_markup=main_keyboard())
 
 
-@router.message(F.text)
+@router.message(StateFilter(None), F.text)
 class GooglePlayLinkHandler(MessageHandler):
     async def handle(self) -> Any:
         text = (self.event.text or "").strip()
@@ -144,13 +153,13 @@ class DeliveryCallback(CallbackQueryHandler):
             _, mode, job_id_str = (self.event.data or "").split(":", 2)
             job_id = int(job_id_str)
         except (ValueError, AttributeError):
-            await self.message.edit_text(JOB_NOT_FOUND_TEXT, reply_markup=main_keyboard())
+            await _safe_edit_text(self.message,JOB_NOT_FOUND_TEXT, reply_markup=main_keyboard())
             return
 
         db = self.data["db"]
         job = await db.get_job(job_id)
         if not job or not job.get("apk_path"):
-            await self.message.edit_text(JOB_NOT_FOUND_TEXT, reply_markup=main_keyboard())
+            await _safe_edit_text(self.message,JOB_NOT_FOUND_TEXT, reply_markup=main_keyboard())
             return
 
         apk_path = Path(job["apk_path"])
@@ -159,7 +168,7 @@ class DeliveryCallback(CallbackQueryHandler):
 
         if not apk_path.exists():
             await db.update_job(job_id, "failed", error="apk_missing")
-            await self.message.edit_text(JOB_NOT_FOUND_TEXT, reply_markup=main_keyboard())
+            await _safe_edit_text(self.message,JOB_NOT_FOUND_TEXT, reply_markup=main_keyboard())
             return
 
         if mode == "tg":
@@ -170,7 +179,7 @@ class DeliveryCallback(CallbackQueryHandler):
             if limit > 0:
                 used = await db.count_user_nixfile_today(self.from_user.id)
                 if used >= limit:
-                    await self.message.edit_text(
+                    await _safe_edit_text(self.message,
                         NIXFILE_QUOTA_TEXT.format(limit=limit),
                         reply_markup=delivery_keyboard(job_id),
                     )
@@ -179,7 +188,7 @@ class DeliveryCallback(CallbackQueryHandler):
             if max_mb > 0 and apk_path.exists():
                 size_mb = apk_path.stat().st_size / (1024 * 1024)
                 if size_mb > max_mb:
-                    await self.message.edit_text(
+                    await _safe_edit_text(self.message,
                         NIXFILE_TOO_BIG_TEXT.format(size_mb=size_mb, limit_mb=max_mb),
                         reply_markup=delivery_keyboard(job_id),
                     )
@@ -189,7 +198,7 @@ class DeliveryCallback(CallbackQueryHandler):
             settings = self.data["settings"]
             uploader = self.data.get("rubika_uploader")
             if uploader is None or not uploader.enabled:
-                await self.message.edit_text(
+                await _safe_edit_text(self.message,
                     RUBIKA_DISABLED_TEXT, reply_markup=delivery_keyboard(job_id)
                 )
                 return
@@ -197,7 +206,7 @@ class DeliveryCallback(CallbackQueryHandler):
             if max_mb > 0 and apk_path.exists():
                 size_mb = apk_path.stat().st_size / (1024 * 1024)
                 if size_mb > max_mb:
-                    await self.message.edit_text(
+                    await _safe_edit_text(self.message,
                         RUBIKA_TOO_BIG_TEXT.format(size_mb=size_mb, limit_mb=max_mb),
                         reply_markup=delivery_keyboard(job_id),
                     )
@@ -209,11 +218,11 @@ class DeliveryCallback(CallbackQueryHandler):
                 rubika_apk_path=str(apk_path),
                 rubika_package_name=package_name,
             )
-            await self.message.edit_text(
+            await _safe_edit_text(self.message,
                 RUBIKA_PROMPT_USERNAME_TEXT, reply_markup=cancel_keyboard()
             )
         else:
-            await self.message.edit_text(JOB_NOT_FOUND_TEXT, reply_markup=main_keyboard())
+            await _safe_edit_text(self.message,JOB_NOT_FOUND_TEXT, reply_markup=main_keyboard())
 
     async def _deliver_telegram(
         self, job_id: int, apk_path: Path, package_label: str
@@ -227,7 +236,7 @@ class DeliveryCallback(CallbackQueryHandler):
         upload_progress = AnimatedProgress(status_message, UPLOAD_TITLE, package_label)
         max_attempts = int(getattr(settings, "telegram_upload_retries", 4) or 4)
         try:
-            await status_message.edit_text(
+            await _safe_edit_text(status_message,
                 AnimatedProgress.render(UPLOAD_TITLE, package_label, 6)
             )
             upload_progress.start()
@@ -240,7 +249,7 @@ class DeliveryCallback(CallbackQueryHandler):
         except Exception as exc:
             await upload_progress.stop()
             await db.update_job(job_id, "failed", error=str(exc))
-            await status_message.edit_text(
+            await _safe_edit_text(status_message,
                 FAILED_TEXT.format(error=safe(exc)),
                 reply_markup=delivery_keyboard(job_id),
             )
@@ -308,7 +317,7 @@ class DeliveryCallback(CallbackQueryHandler):
 
         uploader = self.data.get("nixfile_uploader")
         if uploader is None or not uploader.enabled:
-            await status_message.edit_text(
+            await _safe_edit_text(status_message,
                 NIXFILE_DISABLED_TEXT, reply_markup=main_keyboard()
             )
             return
@@ -317,7 +326,7 @@ class DeliveryCallback(CallbackQueryHandler):
         if cache and cache.get("nixfile_url"):
             cached_url = cache["nixfile_url"]
             if await is_nixfile_url_alive(cached_url):
-                await status_message.edit_text(
+                await _safe_edit_text(status_message,
                     LINK_READY_TEXT.format(package=package_label),
                     reply_markup=link_keyboard(cached_url),
                 )
@@ -332,7 +341,7 @@ class DeliveryCallback(CallbackQueryHandler):
         upload_started = threading.Event()
         progress_started = False
 
-        await status_message.edit_text(NIXFILE_PREPARING_TEXT)
+        await _safe_edit_text(status_message,NIXFILE_PREPARING_TEXT)
 
         async def watch_start() -> None:
             while not upload_started.is_set():
@@ -348,7 +357,7 @@ class DeliveryCallback(CallbackQueryHandler):
             watcher.cancel()
             if progress_started:
                 await upload_progress.stop(percent=100)
-            await status_message.edit_text(
+            await _safe_edit_text(status_message,
                 LINK_READY_TEXT.format(package=package_label),
                 reply_markup=link_keyboard(url),
             )
@@ -361,7 +370,7 @@ class DeliveryCallback(CallbackQueryHandler):
             if progress_started:
                 await upload_progress.stop()
             await db.update_job(job_id, "failed", error=str(exc))
-            await status_message.edit_text(
+            await _safe_edit_text(status_message,
                 FAILED_TEXT.format(error=safe(exc)),
                 reply_markup=main_keyboard(),
             )
@@ -370,7 +379,7 @@ class DeliveryCallback(CallbackQueryHandler):
             if progress_started:
                 await upload_progress.stop()
             await db.update_job(job_id, "failed", error=str(exc))
-            await status_message.edit_text(
+            await _safe_edit_text(status_message,
                 FAILED_TEXT.format(error=safe(exc)),
                 reply_markup=main_keyboard(),
             )
@@ -388,7 +397,7 @@ class RubikaCancelCallback(CallbackQueryHandler):
         job_id = data.get("rubika_job_id")
         markup = delivery_keyboard(job_id) if job_id else main_keyboard()
         try:
-            await self.message.edit_text(CANCELLED_TEXT, reply_markup=markup)
+            await _safe_edit_text(self.message,CANCELLED_TEXT, reply_markup=markup)
         except TelegramBadRequest:
             await self.message.answer(CANCELLED_TEXT, reply_markup=markup)
 
@@ -435,13 +444,13 @@ class RubikaUsernameHandler(MessageHandler):
         except RubikaError as exc:
             err = str(exc)
             if "پیدا نشد" in err or "not found" in err.lower():
-                await status_message.edit_text(
+                await _safe_edit_text(status_message,
                     RUBIKA_USER_NOT_FOUND_TEXT,
                     reply_markup=delivery_keyboard(job_id),
                 )
             else:
                 await db.update_job(job_id, "failed", error=err)
-                await status_message.edit_text(
+                await _safe_edit_text(status_message,
                     FAILED_TEXT.format(error=safe(err)),
                     reply_markup=delivery_keyboard(job_id),
                 )
@@ -449,7 +458,7 @@ class RubikaUsernameHandler(MessageHandler):
         except Exception as exc:
             logger.exception("rubika delivery failed")
             await db.update_job(job_id, "failed", error=str(exc))
-            await status_message.edit_text(
+            await _safe_edit_text(status_message,
                 FAILED_TEXT.format(error=safe(exc)),
                 reply_markup=delivery_keyboard(job_id),
             )
@@ -458,7 +467,7 @@ class RubikaUsernameHandler(MessageHandler):
         await db.set_job_delivery(job_id, "rubika")
         await db.update_job(job_id, "done")
         _maybe_delete_after_upload(settings, apk_path)
-        await status_message.edit_text(
+        await _safe_edit_text(status_message,
             RUBIKA_DELIVERED_TEXT.format(
                 name=safe(result.get("name", "?")),
                 username=safe(username),
