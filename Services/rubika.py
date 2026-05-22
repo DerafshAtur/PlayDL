@@ -147,8 +147,9 @@ class RubikaUploader:
                     self._client.send_message(
                         object_guid=target["object_guid"],
                         text=caption or None,
-                        file_inline=file_path,
+                        file_inline=str(file_path),
                         type=file_type,
+                        file_name=file_path.name,
                     ),
                     timeout=self._settings.rubika_upload_timeout,
                 )
