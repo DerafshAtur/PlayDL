@@ -60,7 +60,7 @@ class RubikaUploader:
             logger.info("[rubika] starting client (session=%s)", session_name)
             client = Client(session_name)
             try:
-                await client.connect()
+                await client.start()
                 me = await client.get_me()
             except rubpy_exceptions.NotRegistered as exc:
                 with contextlib_suppress(Exception):
