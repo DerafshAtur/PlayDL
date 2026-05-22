@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     nixfile_link_check_interval_s: int = Field(default=21600, ge=60, alias="NIXFILE_LINK_CHECK_INTERVAL_S")
     nixfile_max_file_mb: int = Field(default=100, ge=1, alias="NIXFILE_MAX_FILE_MB")
 
+    rubika_session_name: str = Field(default="playdl_rubika", alias="RUBIKA_SESSION_NAME")
+    rubika_session_dir: Path = Field(default=Path("storage"), alias="RUBIKA_SESSION_DIR")
+    rubika_max_file_mb: int = Field(default=500, ge=1, alias="RUBIKA_MAX_FILE_MB")
+    rubika_upload_timeout: int = Field(default=900, ge=30, alias="RUBIKA_UPLOAD_TIMEOUT")
+
 
 def load_settings() -> Settings:
     settings = Settings()

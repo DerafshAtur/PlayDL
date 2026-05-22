@@ -15,6 +15,7 @@ from Services.converter import ApksConverter
 from Services.downloader import PlayDownloader
 from Services.jobs import JobRunner
 from Services.nixfile import NixfileUploader
+from Services.rubika import RubikaUploader
 from Services.sweeper import downloads_sweeper, nixfile_link_checker
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,14 @@ async def main() -> None:
     dp.include_router(setup_routers())
 
     nixfile_uploader = NixfileUploader(settings)
+    rubika_uploader = RubikaUploader(settings)
+    if rubika_uploader.enabled:
+        try:
+            await rubika_uploader.connect()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Rubika uploader connect failed at boot (non-fatal): %s", exc)
+    else:
+        logger.info("Rubika uploader disabled — no session file at %s", rubika_uploader.session_path)
 
     dp["settings"] = settings
     dp["db"] = db
@@ -49,6 +58,7 @@ async def main() -> None:
     dp["converter"] = ApksConverter(settings)
     dp["job_runner"] = JobRunner(settings.max_parallel_jobs)
     dp["nixfile_uploader"] = nixfile_uploader
+    dp["rubika_uploader"] = rubika_uploader
 
     loop = asyncio.get_running_loop()
 
@@ -81,6 +91,8 @@ async def main() -> None:
             with suppress(asyncio.CancelledError, Exception):
                 await task
         nixfile_uploader.force_shutdown()
+        with suppress(Exception):
+            await rubika_uploader.close()
         await bot.session.close()
         await db.close()
 

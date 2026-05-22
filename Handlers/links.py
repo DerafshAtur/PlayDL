@@ -12,6 +12,9 @@ from aiogram.exceptions import (
     TelegramRetryAfter,
     TelegramServerError,
 )
+from aiogram.filters import StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.handlers import CallbackQueryHandler, MessageHandler
 from aiogram.types import FSInputFile
 
@@ -20,6 +23,7 @@ logger = logging.getLogger(__name__)
 from Services.extract import extract_package_name, is_google_play_url
 from Services.nixfile import NixfileError
 from Services.pipeline import run_download_pipeline
+from Services.rubika import RubikaError
 from Services.sweeper import is_nixfile_url_alive
 from Utils.html import bold, safe
 from Utils.keyboards import (
@@ -42,10 +46,21 @@ from Utils.texts import (
     NIXFILE_QUOTA_TEXT,
     NIXFILE_TOO_BIG_TEXT,
     NIXFILE_UPLOAD_TITLE,
+    RUBIKA_DELIVERED_TEXT,
+    RUBIKA_DISABLED_TEXT,
+    RUBIKA_PROMPT_USERNAME_TEXT,
+    RUBIKA_TOO_BIG_TEXT,
+    RUBIKA_UPLOADING_TEXT,
+    RUBIKA_USERNAME_INVALID_TEXT,
+    RUBIKA_USER_NOT_FOUND_TEXT,
     SEND_LINK_TEXT,
     UPLOAD_TITLE,
     USER_BUSY_TEXT,
 )
+
+
+class RubikaDeliveryStates(StatesGroup):
+    waiting_username = State()
 
 router = Router(name="links")
 
@@ -170,6 +185,33 @@ class DeliveryCallback(CallbackQueryHandler):
                     )
                     return
             await self._deliver_nixfile(job_id, apk_path, package_label, package_name)
+        elif mode == "rb":
+            settings = self.data["settings"]
+            uploader = self.data.get("rubika_uploader")
+            if uploader is None or not uploader.enabled:
+                await self.message.edit_text(
+                    RUBIKA_DISABLED_TEXT, reply_markup=delivery_keyboard(job_id)
+                )
+                return
+            max_mb = int(getattr(settings, "rubika_max_file_mb", 0) or 0)
+            if max_mb > 0 and apk_path.exists():
+                size_mb = apk_path.stat().st_size / (1024 * 1024)
+                if size_mb > max_mb:
+                    await self.message.edit_text(
+                        RUBIKA_TOO_BIG_TEXT.format(size_mb=size_mb, limit_mb=max_mb),
+                        reply_markup=delivery_keyboard(job_id),
+                    )
+                    return
+            state: FSMContext = self.data["state"]
+            await state.set_state(RubikaDeliveryStates.waiting_username)
+            await state.update_data(
+                rubika_job_id=job_id,
+                rubika_apk_path=str(apk_path),
+                rubika_package_name=package_name,
+            )
+            await self.message.edit_text(
+                RUBIKA_PROMPT_USERNAME_TEXT, reply_markup=cancel_keyboard()
+            )
         else:
             await self.message.edit_text(JOB_NOT_FOUND_TEXT, reply_markup=main_keyboard())
 
@@ -332,3 +374,94 @@ class DeliveryCallback(CallbackQueryHandler):
                 FAILED_TEXT.format(error=safe(exc)),
                 reply_markup=main_keyboard(),
             )
+
+
+@router.callback_query(StateFilter(RubikaDeliveryStates.waiting_username), F.data == "cancel")
+class RubikaCancelCallback(CallbackQueryHandler):
+    async def handle(self) -> Any:
+        await self.event.answer("لغو شد")
+        state: FSMContext = self.data["state"]
+        data = await state.get_data()
+        await state.clear()
+        if not self.message:
+            return
+        job_id = data.get("rubika_job_id")
+        markup = delivery_keyboard(job_id) if job_id else main_keyboard()
+        try:
+            await self.message.edit_text(CANCELLED_TEXT, reply_markup=markup)
+        except TelegramBadRequest:
+            await self.message.answer(CANCELLED_TEXT, reply_markup=markup)
+
+
+@router.message(StateFilter(RubikaDeliveryStates.waiting_username), F.text)
+class RubikaUsernameHandler(MessageHandler):
+    async def handle(self) -> Any:
+        state: FSMContext = self.data["state"]
+        data = await state.get_data()
+        uploader = self.data.get("rubika_uploader")
+        db = self.data["db"]
+        settings = self.data["settings"]
+
+        username = (self.event.text or "").strip().lstrip("@")
+        if not username or not username.replace("_", "").isalnum():
+            await self.event.answer(RUBIKA_USERNAME_INVALID_TEXT)
+            return
+
+        job_id = int(data.get("rubika_job_id") or 0)
+        apk_path_str = data.get("rubika_apk_path", "")
+        package_name = data.get("rubika_package_name", "")
+        apk_path = Path(apk_path_str) if apk_path_str else None
+
+        await state.clear()
+
+        if uploader is None or not uploader.enabled:
+            await self.event.answer(RUBIKA_DISABLED_TEXT, reply_markup=main_keyboard())
+            return
+        if not apk_path or not apk_path.exists():
+            await db.update_job(job_id, "failed", error="apk_missing")
+            await self.event.answer(JOB_NOT_FOUND_TEXT, reply_markup=main_keyboard())
+            return
+
+        status_message = await self.event.answer(
+            RUBIKA_UPLOADING_TEXT.format(username=safe(username))
+        )
+
+        try:
+            result = await uploader.send_file(
+                apk_path,
+                target_username=username,
+                caption=f"{package_name}\n— via PlayDL bot",
+            )
+        except RubikaError as exc:
+            err = str(exc)
+            if "پیدا نشد" in err or "not found" in err.lower():
+                await status_message.edit_text(
+                    RUBIKA_USER_NOT_FOUND_TEXT,
+                    reply_markup=delivery_keyboard(job_id),
+                )
+            else:
+                await db.update_job(job_id, "failed", error=err)
+                await status_message.edit_text(
+                    FAILED_TEXT.format(error=safe(err)),
+                    reply_markup=delivery_keyboard(job_id),
+                )
+            return
+        except Exception as exc:
+            logger.exception("rubika delivery failed")
+            await db.update_job(job_id, "failed", error=str(exc))
+            await status_message.edit_text(
+                FAILED_TEXT.format(error=safe(exc)),
+                reply_markup=delivery_keyboard(job_id),
+            )
+            return
+
+        await db.set_job_delivery(job_id, "rubika")
+        await db.update_job(job_id, "done")
+        _maybe_delete_after_upload(settings, apk_path)
+        await status_message.edit_text(
+            RUBIKA_DELIVERED_TEXT.format(
+                name=safe(result.get("name", "?")),
+                username=safe(username),
+            ),
+            reply_markup=main_keyboard(),
+        )

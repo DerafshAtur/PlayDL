@@ -29,6 +29,26 @@ NIXFILE_TOO_BIG_TEXT = (
     "حجم فایل ({size_mb:.1f} MB) از سقف نیکس‌فایل ({limit_mb} MB) بیشتر است.\n"
     "از گزینه تلگرام استفاده کن."
 )
+
+RUBIKA_DISABLED_TEXT = (
+    "ارسال به روبیکا فعال نیست.\n"
+    "ادمین باید با اجرای `python session_rubika.py` اکانت روبیکا را وصل کند."
+)
+RUBIKA_PROMPT_USERNAME_TEXT = (
+    "نام کاربری روبیکای خود را بفرست (با یا بدون @).\n"
+    "مثلاً: @yourname"
+)
+RUBIKA_USERNAME_INVALID_TEXT = "نام کاربری معتبر نیست. دوباره بفرست."
+RUBIKA_USER_NOT_FOUND_TEXT = "کاربر روبیکا با این نام پیدا نشد. مطمئنی نام کاربری درسته؟"
+RUBIKA_UPLOADING_TEXT = "در حال ارسال فایل به روبیکا برای @{username} ..."
+RUBIKA_DELIVERED_TEXT = (
+    "فایل به روبیکا ارسال شد ✅\n"
+    "گیرنده: {name} (@{username})\n"
+    "در دایرکت روبیکا چک کن."
+)
+RUBIKA_TOO_BIG_TEXT = (
+    "حجم فایل ({size_mb:.1f} MB) از سقف روبیکا ({limit_mb} MB) بیشتر است."
+)
 USER_BUSY_TEXT = (
     "یک درخواست از طرف شما در حال پردازش است. لطفاً صبر کن تا تموم بشه."
 )

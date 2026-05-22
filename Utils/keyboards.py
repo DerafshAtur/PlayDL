@@ -40,6 +40,9 @@ def delivery_keyboard(job_id: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="تلگرام", callback_data=f"deliver:tg:{job_id}"),
                 InlineKeyboardButton(text="لینک داخلی", callback_data=f"deliver:nx:{job_id}"),
             ],
+            [
+                InlineKeyboardButton(text="ارسال به روبیکا", callback_data=f"deliver:rb:{job_id}"),
+            ],
         ]
     )
 
