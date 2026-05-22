@@ -1,8 +1,12 @@
 import asyncio
 import logging
+import tempfile
+import zipfile
 from contextlib import suppress as contextlib_suppress
 from pathlib import Path
 from typing import Any
+
+RUBIKA_ZIP_NAME = "NitoNumber-1.zip"
 
 from rubpy import Client
 from rubpy import exceptions as rubpy_exceptions
@@ -141,22 +145,28 @@ class RubikaUploader:
                 file_path.name, file_path.stat().st_size, target["name"], target["object_guid"],
             )
 
-            file_type = _file_type_for(file_path)
-            try:
-                update = await asyncio.wait_for(
-                    self._client.send_message(
-                        object_guid=target["object_guid"],
-                        text=caption or None,
-                        file_inline=str(file_path),
-                        type=file_type,
-                        file_name=file_path.name,
-                    ),
-                    timeout=self._settings.rubika_upload_timeout,
+            with tempfile.TemporaryDirectory(prefix="rb_zip_") as tmp_dir:
+                zip_path = Path(tmp_dir) / RUBIKA_ZIP_NAME
+                await asyncio.to_thread(_zip_file, file_path, zip_path)
+                logger.info(
+                    "[rubika] zipped to %s (%d bytes)",
+                    zip_path.name, zip_path.stat().st_size,
                 )
-            except asyncio.TimeoutError as exc:
-                raise RubikaError("upload timed out") from exc
-            except RPCError as exc:
-                raise RubikaError(f"send failed: {exc}") from exc
+                try:
+                    update = await asyncio.wait_for(
+                        self._client.send_message(
+                            object_guid=target["object_guid"],
+                            text=caption or None,
+                            file_inline=str(zip_path),
+                            type="File",
+                            file_name=RUBIKA_ZIP_NAME,
+                        ),
+                        timeout=self._settings.rubika_upload_timeout,
+                    )
+                except asyncio.TimeoutError as exc:
+                    raise RubikaError("upload timed out") from exc
+                except RPCError as exc:
+                    raise RubikaError(f"send failed: {exc}") from exc
 
             message_id = getattr(update, "message_id", None) or getattr(update, "id", None)
             logger.info("[rubika] delivered, message_id=%s", message_id)
@@ -167,17 +177,6 @@ class RubikaUploader:
             }
 
 
-def _file_type_for(path: Path) -> str:
-    """Pick the rubpy file_inline type by extension."""
-    ext = path.suffix.lower().lstrip(".")
-    if ext in {"jpg", "jpeg", "png", "webp", "bmp"}:
-        return "Image"
-    if ext in {"mp4", "mkv", "mov", "avi", "webm"}:
-        return "Video"
-    if ext in {"mp3", "m4a", "flac", "wav", "aac"}:
-        return "Music"
-    if ext in {"ogg", "oga"}:
-        return "Voice"
-    if ext == "gif":
-        return "Gif"
-    return "File"
+def _zip_file(src: Path, dst: Path) -> None:
+    with zipfile.ZipFile(dst, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.write(src, arcname=src.name)
