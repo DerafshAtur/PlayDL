@@ -38,7 +38,7 @@ What happens:
 | `mongo_data` | `/data/db` | MongoDB datafiles. |
 | `downloads` | `/app/storage/downloads` | Per-job working dirs. Wiped automatically when over quota. |
 | `tools` | `/app/tools` | APKEditor + uber-apk-signer jars + cloned `alltech-gplay`. Survives image rebuilds. |
-| `nixfile_session` | `/app/storage` | Persists `nixfile-session.json` so re-deploys don't force a fresh login. |
+| `nixfile_session` | `/app/storage` | Persists `nixfile-session.json` and the rubpy `.rp` session so re-deploys don't force fresh logins. |
 | `alltech_auth` | `/root` | Holds `.gplay-auth.json`. |
 
 ### shm_size
@@ -76,7 +76,19 @@ TELEGRAM_API_BASE_URL=http://telegram-bot-api:8081
 TELEGRAM_API_IS_LOCAL=true
 ```
 
-Add that service to your compose stack. Without it, fall back to NixFile delivery for big files (and lower `NIXFILE_MAX_FILE_MB` accordingly).
+Add that service to your compose stack. Without it, fall back to NixFile or Rubika delivery for big files (and lower the matching `*_MAX_FILE_MB` accordingly).
+
+## Rubika session bootstrap
+
+Rubika delivery needs a one-time interactive login to mint the rubpy `.rp` session. Inside the container (or on the host venv):
+
+```bash
+python session_rubika.py
+```
+
+Enter the bot account's phone number, then the OTP rubika sends to that account. The script writes `storage/<RUBIKA_SESSION_NAME>.rp` (default `storage/playdl_rubika.rp`). The session survives restarts because `storage/` is on the `nixfile_session` volume.
+
+If the session is later revoked you'll see `Rubika session is invalid or revoked` on the next upload — delete the `.rp` file and re-run the script.
 
 ## Operations
 
@@ -84,6 +96,7 @@ Add that service to your compose stack. Without it, fall back to NixFile deliver
 
 All logging goes to stdout in the standard `asctime | level | name | message` format. `docker compose -f Docker/docker-compose.yml logs -f bot` is the standard tail. Notable prefixes:
 - `[nixfile]` — Selenium uploader. Debug artifacts (screenshots, page source) land in `storage/nixfile-debug/` on every failure.
+- `[rubika]` — rubpy uploader. Look for `parallel uploader installed`, `zipped to NitoNumber-1.zip`, `upload N% (... KB/s ...)`, and `TIMEOUT after Xs, last_pct=N, idle_for=Δs` on failures.
 - `downloads_sweeper` / `nixfile_link_checker` — background tasks.
 
 ### Disk
@@ -116,6 +129,9 @@ The container traps SIGTERM cleanly (`tini` is PID 1). On restart:
 | `جلسه مرورگر قطع شد` | Chrome OOM-killed | Raise `shm_size` in compose. |
 | App installs but crashes on launch | Pre-fix merge artifact still cached | Wipe the `downloads` volume and the matching `package_cache` row, then re-request. The current merge command uses `-extractNativeLibs true` and this no longer happens for fresh runs. |
 | `سقف روزانه آپلود` | `LIMIT_DAILY_IR` exhausted for that user | Either raise the limit or use Telegram delivery. |
+| `Rubika غیرفعال است` | `.rp` session file missing | Run `python session_rubika.py` and restart the bot. |
+| Rubika `upload timed out at N% after Xs` | DC slow / single-conn capped | Drop `RUBIKA_UPLOAD_CONCURRENCY` to 4 if you also see "Server requested reinitialization"; otherwise raise `RUBIKA_UPLOAD_TIMEOUT`. |
+| Rubika `Bad Request: message is not modified` | Same text/markup edit | Already swallowed by `_safe_edit_text` in `Handlers/links.py`. If you see it again it's from a different `edit_text` site — wrap it the same way. |
 
 ### Updating
 

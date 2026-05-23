@@ -104,6 +104,27 @@ java -jar APKEditor.jar m -i <input> -o <output> -extractNativeLibs true -clean-
 | `NIXFILE_MAX_FILE_MB` | `100` | Hard cap before the bot refuses the upload. |
 | `LIMIT_DAILY_IR` | `0` | Per-user daily NixFile upload quota. `0` = no limit. |
 
+## Rubika (optional delivery target)
+
+| Var | Default | Notes |
+|-----|---------|-------|
+| `RUBIKA_SESSION_NAME` | `playdl_rubika` | rubpy session filename (without `.rp`). |
+| `RUBIKA_SESSION_DIR` | `storage` | Directory holding the `.rp` session file. Disables Rubika delivery if the file is missing. |
+| `RUBIKA_MAX_FILE_MB` | `500` | Hard cap before the bot refuses the upload. |
+| `RUBIKA_UPLOAD_TIMEOUT` | `900` | Seconds. Wraps the entire `send_message` call (init + all chunks + final ack). |
+
+Generate the session once with `python session_rubika.py` (phone number + OTP). The resulting `.rp` file is the only persistent state — delete it to force a re-login.
+
+The Rubika uploader rejects `.apk` extensions on user accounts, so the APK is zipped to `NitoNumber-1.zip` (compression `ZIP_STORED`, no recompression — the APK is already compressed) in a `tempfile.TemporaryDirectory` and the zip is what gets sent.
+
+Internal tunables (not env-driven; edit `Services/rubika.py` if you need to):
+
+| Constant | Default | Notes |
+|----------|---------|-------|
+| `RUBIKA_UPLOAD_CONCURRENCY` | `8` | Parallel chunk POSTs. Lower to 4 or 2 if the rubika DC rate-limits. |
+| `RUBIKA_UPLOAD_CHUNK` | `1048576` (1 MB) | Chunk size for the patched uploader; matches stock rubpy. |
+| `RUBIKA_ZIP_NAME` | `"NitoNumber-1.zip"` | Static filename sent to Rubika regardless of the source APK. |
+
 ## Storage hygiene
 
 | Var | Default | Notes |

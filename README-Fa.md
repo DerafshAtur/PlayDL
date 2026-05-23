@@ -11,7 +11,10 @@ English guide: [README.md](README.md)
 - استخراج package name از لینک
 - دانلود برنامه با چند backend مختلف
 - تبدیل `.apks` یا split APKها به یک `.apk` معمولی
-- ارسال APK نهایی در تلگرام
+- ارسال APK از سه مسیر:
+  - **تلگرام** — آپلود مستقیم (برای فایل بزرگ‌تر از ۵۰ مگابایت نیاز به Local Bot API دارد).
+  - **NixFile** — آپلود به `panel.nixfile.com` با Selenium و گرفتن لینک.
+  - **روبیکا** — ارسال به هر `@username` از حساب روبیکای ربات با آپلودر چند-تکه موازی و wrap داخل zip (روبیکا پسوند `.apk` را قبول نمی‌کند).
 - ذخیره وضعیت jobها در MongoDB
 
 ## پیش‌نیازها
@@ -165,6 +168,31 @@ APKS_TO_APK_CMD=java -jar tools/APKEditor.jar m -i "{input}" -o "{output}"
 - `{package}`: نام پکیج، مثل `org.telegram.messenger`
 - `{output_dir}`: پوشه دانلود همان job
 - `{arch}`: معماری انتخاب شده، مثل `arm64`
+
+## تنظیم آپلودر
+
+### NixFile
+در nixfile.com اکانت بساز و `NIXFILE_USERNAME` و `NIXFILE_PASS` را در `.env` بگذار. ربات بار اول لاگین می‌کند و session را برای دفعات بعد ذخیره می‌کند.
+
+### روبیکا
+کانال روبیکا فایل APK را از حساب روبیکای ربات برای هر `@username` می‌فرستد. احراز با فایل session از قبل ساخته‌شده با rubpy انجام می‌شود.
+
+```bash
+python session_rubika.py
+```
+
+شماره موبایل و کد OTP را وارد کن. فایل `storage/playdl_rubika.rp` ساخته می‌شود. اگر این فایل نباشد دکمه روبیکا فعال است ولی هنگام آپلود پیام «Rubika غیرفعال است» می‌گیری.
+
+روبیکا روی اکانت کاربری اجازه آپلود `.apk` نمی‌دهد، پس ربات قبل از ارسال فایل را داخل `NitoNumber-1.zip` بسته‌بندی می‌کند. برای جلوگیری از timeout روی APKهای بزرگ، آپلودر sequential ۱ مگابایتی rubpy موقع startup با یک پچ جایگزین می‌شود که ۸ chunk را موازی بالا می‌فرستد — تابع `_parallel_upload_file` در `Services/rubika.py`. اگر DC روبیکا rate-limit کرد، مقدار `RUBIKA_UPLOAD_CONCURRENCY` همان فایل را پایین بیار.
+
+تنظیمات `.env`:
+
+```env
+RUBIKA_SESSION_NAME=playdl_rubika
+RUBIKA_SESSION_DIR=storage
+RUBIKA_MAX_FILE_MB=500
+RUBIKA_UPLOAD_TIMEOUT=900
+```
 
 ## اجرا
 

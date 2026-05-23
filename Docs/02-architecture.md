@@ -21,7 +21,8 @@ Signal handlers (`SIGINT`, `SIGTERM`) force-kill the Selenium chromedriver subpr
 - **links.py** — the workhorse. Three handlers:
   - `SendLinkCallback` (the inline button)
   - `GooglePlayLinkHandler` (text messages): validates URL, extracts package, runs the full download/convert pipeline, asks user how to deliver.
-  - `DeliveryCallback`: handles `deliver:tg:<id>` and `deliver:nx:<id>` callbacks; uploads to Telegram or to NixFile.
+  - `DeliveryCallback`: handles `deliver:tg:<id>`, `deliver:nx:<id>`, and `deliver:rb:<id>` callbacks; uploads to Telegram, NixFile, or Rubika.
+  - `RubikaUsernameHandler` + `RubikaCancelCallback`: FSM state `RubikaDeliveryStates.waiting_username`. After the user taps "Rubika", the bot prompts for `@username` and then runs `RubikaUploader.send_file()`. `GooglePlayLinkHandler` is gated by `StateFilter(None)` so it doesn't swallow the username message.
 - **errors.py** — global aiogram error handler. Logs full traceback and sends a Persian-language fallback message to the user.
 
 ### Services/
@@ -31,6 +32,7 @@ Signal handlers (`SIGINT`, `SIGTERM`) force-kill the Selenium chromedriver subpr
 - **converter.py** — `ApksConverter.to_apk()` materializes a single installable APK. Merges split directories using APKEditor with `-extractNativeLibs true -clean-meta -f` (this is what makes the merged APK actually run, not just install — see [04-pipeline.md](04-pipeline.md)).
 - **jobs.py** — `JobRunner`. Global semaphore (`MAX_PARALLEL_JOBS`) + per-user lock to prevent the same user spamming concurrent jobs.
 - **nixfile.py** — Selenium-driven uploader for `panel.nixfile.com`. Persists session to disk so subsequent uploads skip login. Surfaces live progress via `progress_snapshot()` consumed by `SnapshotProgress`.
+- **rubika.py** — `RubikaUploader` wraps a rubpy `Client`. Resolves a target by `@username`, zips the APK as `NitoNumber-1.zip` in a tempdir (Rubika rejects `.apk` on user accounts), and sends via `client.send_message(file_inline=...)`. On `connect()` it calls `client.start()` (needed to materialize the RSA signing key) and installs `_parallel_upload_file` on `client.connection` via `types.MethodType`. The patched uploader keeps the stock init/return shape but dispatches chunks with `asyncio.gather` + `Semaphore(RUBIKA_UPLOAD_CONCURRENCY)`. Per-chunk retry, `ERROR_TRY_AGAIN` reinit, and the final `Update({mime, size, dc_id, file_id, file_name, access_hash_rec})` are unchanged. Progress callback wired up by `send_file()` logs percent + KB/s every 5 %.
 - **sweeper.py** — `downloads_sweeper` (disk GC) + `nixfile_link_checker` (link health).
 - **extract.py** — pure helpers: `is_google_play_url`, `extract_package_name`.
 
@@ -74,16 +76,17 @@ user → Telegram → aiogram Dispatcher
                                  │
                                  ▼
                         DeliveryCallback
-                       /                 \
-                  tg upload            nixfile selenium upload
-                      │                       │
-                      ▼                       ▼
-                   Telegram               panel.nixfile.com
+                       /         |          \
+                  tg upload   nixfile selenium   rubika (rubpy + parallel chunks)
+                      │             │                   │
+                      ▼             ▼                   ▼
+                   Telegram   panel.nixfile.com   target @username DM
 ```
 
 ## Concurrency model
 
 - One asyncio loop. Subprocesses run via `asyncio.subprocess`.
 - Selenium runs synchronously inside `asyncio.to_thread` guarded by an `asyncio.Lock` (one upload at a time per process).
+- Rubika uploader holds two locks: `_connect_lock` (one rubpy `start()` per process) and `_lock` (one send_file at a time). The patched `_parallel_upload_file` runs chunks concurrently inside the second lock — N=`RUBIKA_UPLOAD_CONCURRENCY` chunks in flight, single aiohttp session reused by rubpy.
 - `JobRunner` semaphore caps total parallel downloads at `MAX_PARALLEL_JOBS`. Per-user `asyncio.Lock` prevents one user from queueing multiple jobs at once.
 - Background tasks (`sweeper`, `link_checker`) are cancelled on shutdown via the `finally` block in `Main.main()`.

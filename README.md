@@ -11,7 +11,10 @@ Persian guide: [README-Fa.md](README-Fa.md)
 - Extracts the package name from the link.
 - Downloads the app with one of the supported downloader backends.
 - Converts `.apks` or split APK folders into one installable `.apk`.
-- Uploads the final APK to the user through Telegram.
+- Delivers the APK through one of three channels:
+  - **Telegram** — direct upload (needs local Bot API server for files > 50 MB).
+  - **NixFile** — Selenium-driven hosted link on `panel.nixfile.com`.
+  - **Rubika** — sent to any `@username` from the bot-owned Rubika account, with a parallel-chunk uploader and zip wrap (Rubika rejects `.apk`).
 - Saves user/job status in MongoDB.
 
 ## Requirements
@@ -167,7 +170,29 @@ Available template variables:
 - `{arch}`: configured architecture, for example `arm64`
 
 ## Uploader Setup
-go to nixfile.com, create an account and put the username & password in your **.env** file in `NIXFILE_USERNAME` and `NIXFILE_PASS` fields. the bot login in the first run and after that uses the saved session
+
+### NixFile
+Go to nixfile.com, create an account and put the username & password in your **.env** file in `NIXFILE_USERNAME` and `NIXFILE_PASS` fields. The bot logs in on the first run and reuses the saved session afterwards.
+
+### Rubika
+The Rubika channel sends the APK from a bot-owned Rubika user account to any `@username`. Auth is via a pre-generated rubpy session file.
+
+```bash
+python session_rubika.py
+```
+
+Follow the prompts (phone number, OTP). This creates `storage/playdl_rubika.rp`. If the file is missing the Rubika button stays in the menu but uploads return "Rubika غیرفعال است".
+
+Rubika rejects `.apk` extensions on user-account uploads, so the bot zips the file as `NitoNumber-1.zip` before sending. To avoid timeouts on large APKs, rubpy's sequential 1 MB chunk uploader is monkey-patched on startup to upload 8 chunks in parallel — see `_parallel_upload_file` in `Services/rubika.py`. Adjust `RUBIKA_UPLOAD_CONCURRENCY` in the same file if the Rubika DC rate-limits.
+
+Tunables in `.env`:
+
+```env
+RUBIKA_SESSION_NAME=playdl_rubika
+RUBIKA_SESSION_DIR=storage
+RUBIKA_MAX_FILE_MB=500
+RUBIKA_UPLOAD_TIMEOUT=900
+```
 
 ## Run
 

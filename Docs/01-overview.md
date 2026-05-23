@@ -1,6 +1,6 @@
 # PlayDL — Overview
 
-PlayDL is a Persian-language Telegram bot that downloads apps from Google Play, merges split APKs into a single installable APK, optionally signs it, and delivers it to the user either as a Telegram document or as a hosted link on NixFile.
+PlayDL is a Persian-language Telegram bot that downloads apps from Google Play, merges split APKs into a single installable APK, optionally signs it, and delivers it through one of three channels: a Telegram document, a hosted link on NixFile, or a direct file send to a Rubika `@username` from the bot-owned Rubika account.
 
 ## What it does
 
@@ -9,7 +9,7 @@ PlayDL is a Persian-language Telegram bot that downloads apps from Google Play, 
 3. A downloader backend (`alltech-gplay` / `gplaydl` / `apkeep` / custom) fetches the app from Google Play servers.
 4. `ApksConverter` merges split APKs into one `.apk` using `APKEditor.jar`.
 5. Optional: `uber-apk-signer.jar` signs the APK so Android accepts it for installation.
-6. User chooses delivery: direct Telegram upload or NixFile upload (driven by Selenium).
+6. User chooses delivery: direct Telegram upload, NixFile (Selenium), or Rubika (rubpy with parallel-chunk upload patch).
 7. Result cached in MongoDB. Future requests for the same package short-circuit through the cache.
 
 ## Tech stack
@@ -19,6 +19,7 @@ PlayDL is a Persian-language Telegram bot that downloads apps from Google Play, 
 - **APKEditor** (Java) — split-APK merging.
 - **uber-apk-signer** (Java) — automatic signing.
 - **Selenium + Chrome** — NixFile browser automation.
+- **rubpy** — Rubika user-account client, with an in-tree parallel-chunk uploader monkey-patch.
 - **pydantic-settings** — configuration via `.env`.
 
 ## Source layout
@@ -26,7 +27,7 @@ PlayDL is a Persian-language Telegram bot that downloads apps from Google Play, 
 ```
 App/        bot + config + entrypoint glue
 Handlers/   aiogram routers (start, links, errors)
-Services/   downloader, converter, jobs queue, nixfile uploader, sweeper, bootstrap
+Services/   downloader, converter, jobs queue, nixfile uploader, rubika uploader, sweeper, bootstrap
 DataBase/   MongoDB wrapper
 Utils/      keyboards, texts, html, progress renderers
 Main.py     async main, signal handling, polling loop

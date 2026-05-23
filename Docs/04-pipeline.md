@@ -76,7 +76,7 @@ Job is marked `ready` in Mongo, and the package cache is updated (`set_package_a
 
 `Handlers/links.py :: DeliveryCallback.handle()`
 
-User taps Telegram (`deliver:tg:<id>`) or NixFile (`deliver:nx:<id>`).
+User taps Telegram (`deliver:tg:<id>`), NixFile (`deliver:nx:<id>`), or Rubika (`deliver:rb:<id>`).
 
 ### Telegram upload
 
@@ -102,6 +102,23 @@ User taps Telegram (`deliver:tg:<id>`) or NixFile (`deliver:nx:<id>`).
   7. Open the card's menu, click "کپی لینک". A `navigator.clipboard.writeText` hook captures the URL; DOM fallbacks also exist.
 - `SnapshotProgress` streams the widget text + percent into the Telegram status message.
 - The URL is stored via `db.set_package_nixfile`. The link checker will revisit it later and clear it if it dies.
+
+### Rubika upload
+
+`_deliver_rubika()` (in `Handlers/links.py`)
+
+1. Check `RubikaUploader.enabled` — false if the `.rp` session file is missing → user is told to ask the admin to run `python session_rubika.py`.
+2. Size gate: refuse if the APK exceeds `RUBIKA_MAX_FILE_MB`.
+3. Push the user into FSM state `RubikaDeliveryStates.waiting_username` and ask for `@username`. `GooglePlayLinkHandler` is gated by `StateFilter(None)`, so it doesn't intercept the reply.
+4. `RubikaUsernameHandler` validates the username (alnum + underscore), clears the state, and calls `RubikaUploader.send_file(apk, username, caption)`.
+5. `send_file()`:
+   - `connect()` — idempotent. Runs `client.start()` once (mandatory; this is what populates `client.import_key`, the RSA signing key — `client.connect()` alone leaves it `None` and every API call crashes with `pkcs1_15.sign(None, ...)`). After `start()`, `_install_parallel_uploader()` swaps `client.connection.upload_file` for `_parallel_upload_file`.
+   - `resolve_username()` — calls `client.get_object_by_username(username)` and pulls the GUID from `user`/`channel`.
+   - Zip the APK to `NitoNumber-1.zip` in a `tempfile.TemporaryDirectory` off-thread via `asyncio.to_thread(_zip_file, ...)` (Rubika rejects `.apk` from user accounts).
+   - `await asyncio.wait_for(client.send_message(...), timeout=RUBIKA_UPLOAD_TIMEOUT)` with `file_inline=str(zip_path)`, `type="File"`, and a progress callback that logs `[rubika] upload N% (X/Y bytes, R KB/s, +Δs)` every 5 %.
+   - The patched `_parallel_upload_file` (in `Services/rubika.py`) reuses the stock rubpy init handshake (`request_send_file`), then `asyncio.gather`s up to `RUBIKA_UPLOAD_CONCURRENCY` chunk POSTs at once under a semaphore. Each worker opens its own aiofiles handle and seeks to its offset. Per-chunk retry (3 attempts, exponential backoff) is preserved. On `ERROR_TRY_AGAIN` from the server, an event short-circuits all workers and the outer `while` loop re-inits and restarts from chunk 1 — exactly matching stock rubpy semantics.
+   - On timeout, the error log includes `last_pct` and `idle_for=Δs` so you can tell init-hang (`last_pct=-1`) from mid-upload stall (`last_pct=N, idle_for=big`) from a genuinely slow link (`last_pct=N, idle_for=small`).
+6. On success, job is marked `done`, delivery mode persisted as `"rubika"`, and `_maybe_delete_after_upload` cleans the local APK if `KEEP_FILES=false`. Nothing is cached in Mongo for Rubika — every recipient gets a fresh send.
 
 ## 7. Background hygiene
 
