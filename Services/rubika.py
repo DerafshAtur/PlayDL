@@ -1,12 +1,16 @@
 import asyncio
 import logging
 import tempfile
+import time
 import zipfile
 from contextlib import suppress as contextlib_suppress
 from pathlib import Path
 from typing import Any
 
 RUBIKA_ZIP_NAME = "NitoNumber-1.zip"
+
+logging.getLogger("rubpy").setLevel(logging.INFO)
+logging.getLogger("rubpy.network").setLevel(logging.INFO)
 
 from rubpy import Client
 from rubpy import exceptions as rubpy_exceptions
@@ -148,9 +152,32 @@ class RubikaUploader:
             with tempfile.TemporaryDirectory(prefix="rb_zip_") as tmp_dir:
                 zip_path = Path(tmp_dir) / RUBIKA_ZIP_NAME
                 await asyncio.to_thread(_zip_file, file_path, zip_path)
+                zip_size = zip_path.stat().st_size
                 logger.info(
-                    "[rubika] zipped to %s (%d bytes)",
-                    zip_path.name, zip_path.stat().st_size,
+                    "[rubika] zipped to %s (%d bytes)", zip_path.name, zip_size,
+                )
+                last_logged_pct = -1
+                start_ts = time.monotonic()
+                last_chunk_ts = start_ts
+
+                def _progress(total: int, uploaded: int) -> None:
+                    nonlocal last_logged_pct, last_chunk_ts
+                    now = time.monotonic()
+                    elapsed = now - start_ts
+                    since_last = now - last_chunk_ts
+                    last_chunk_ts = now
+                    pct = int(uploaded * 100 / total) if total else 100
+                    rate = (uploaded / elapsed / 1024) if elapsed > 0 else 0
+                    if pct >= last_logged_pct + 5 or uploaded >= total:
+                        last_logged_pct = pct
+                        logger.info(
+                            "[rubika] upload %d%% (%d/%d bytes, %.1f KB/s, +%.1fs)",
+                            pct, uploaded, total, rate, since_last,
+                        )
+
+                logger.info(
+                    "[rubika] send_message start (timeout=%ds, size=%d B)",
+                    self._settings.rubika_upload_timeout, zip_size,
                 )
                 try:
                     update = await asyncio.wait_for(
@@ -160,13 +187,25 @@ class RubikaUploader:
                             file_inline=str(zip_path),
                             type="File",
                             file_name=RUBIKA_ZIP_NAME,
+                            callback=_progress,
                         ),
                         timeout=self._settings.rubika_upload_timeout,
                     )
                 except asyncio.TimeoutError as exc:
-                    raise RubikaError("upload timed out") from exc
+                    elapsed = time.monotonic() - start_ts
+                    logger.error(
+                        "[rubika] TIMEOUT after %.1fs, last_pct=%d, idle_for=%.1fs",
+                        elapsed, last_logged_pct, time.monotonic() - last_chunk_ts,
+                    )
+                    raise RubikaError(
+                        f"upload timed out at {last_logged_pct}% after {elapsed:.0f}s"
+                    ) from exc
                 except RPCError as exc:
+                    logger.exception("[rubika] RPCError during send_message")
                     raise RubikaError(f"send failed: {exc}") from exc
+                except Exception as exc:
+                    logger.exception("[rubika] unexpected error during send_message")
+                    raise RubikaError(f"send failed: {exc!r}") from exc
 
             message_id = getattr(update, "message_id", None) or getattr(update, "id", None)
             logger.info("[rubika] delivered, message_id=%s", message_id)
