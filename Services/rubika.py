@@ -1,13 +1,20 @@
 import asyncio
+import inspect
 import logging
+import os
 import tempfile
 import time
+import types
 import zipfile
 from contextlib import suppress as contextlib_suppress
 from pathlib import Path
 from typing import Any
 
+import aiofiles
+
 RUBIKA_ZIP_NAME = "NitoNumber-1.zip"
+RUBIKA_UPLOAD_CONCURRENCY = 8
+RUBIKA_UPLOAD_CHUNK = 1024 * 1024
 
 logging.getLogger("rubpy").setLevel(logging.INFO)
 logging.getLogger("rubpy.network").setLevel(logging.INFO)
@@ -15,6 +22,7 @@ logging.getLogger("rubpy.network").setLevel(logging.INFO)
 from rubpy import Client
 from rubpy import exceptions as rubpy_exceptions
 from rubpy.exceptions import RPCError
+from rubpy.types import Update
 
 from App.config import Settings
 
@@ -69,6 +77,7 @@ class RubikaUploader:
             client = Client(session_name)
             try:
                 await client.start()
+                _install_parallel_uploader(client)
                 me = await client.get_me()
             except rubpy_exceptions.NotRegistered as exc:
                 with contextlib_suppress(Exception):
@@ -219,3 +228,161 @@ class RubikaUploader:
 def _zip_file(src: Path, dst: Path) -> None:
     with zipfile.ZipFile(dst, "w", compression=zipfile.ZIP_STORED) as zf:
         zf.write(src, arcname=src.name)
+
+
+async def _parallel_upload_file(
+    self,
+    file,
+    mime=None,
+    file_name=None,
+    chunk: int = RUBIKA_UPLOAD_CHUNK,
+    callback=None,
+    max_retries: int = 3,
+    backoff: float = 1.0,
+    concurrency: int = RUBIKA_UPLOAD_CONCURRENCY,
+    *args,
+    **kwargs,
+):
+    """Parallel-chunk replacement for rubpy.network.Connection.upload_file.
+
+    Same init handshake (request_send_file), same per-chunk POST headers and
+    retry policy. Difference: chunks upload concurrently via asyncio.gather
+    with a bounded semaphore. On ERROR_TRY_AGAIN the entire upload restarts
+    (matches stock rubpy behavior).
+    """
+    if isinstance(file, str):
+        if not os.path.exists(file):
+            raise ValueError("File not found at the given path.")
+        file_name = file_name or os.path.basename(file)
+        file_size = os.path.getsize(file)
+        is_path = True
+    elif isinstance(file, bytes):
+        if not file_name:
+            raise ValueError("file_name must be specified when uploading from bytes.")
+        file_size = len(file)
+        is_path = False
+    else:
+        raise TypeError("file must be a file path (str) or raw bytes.")
+
+    mime = mime or file_name.split(".")[-1]
+
+    async def handle_callback(total: int, current: int) -> None:
+        if not callable(callback):
+            return
+        try:
+            if inspect.iscoroutinefunction(callback):
+                await callback(total, current)
+            else:
+                callback(total, current)
+        except Exception as e:  # noqa: BLE001
+            self.logger.error(f"Callback error: {e}")
+
+    while True:
+        init = await self.client.request_send_file(file_name, file_size, mime)
+        file_id = init.id
+        dc_id = init.dc_id
+        upload_url = init.upload_url
+        access_hash_send = init.access_hash_send
+        total_parts = (file_size + chunk - 1) // chunk
+
+        sem = asyncio.Semaphore(concurrency)
+        progress_lock = asyncio.Lock()
+        uploaded = 0
+        reinit = asyncio.Event()
+        final_chunk_resp: dict = {}
+
+        async def upload_chunk(part_number: int):
+            nonlocal uploaded
+            if reinit.is_set():
+                return
+            offset = (part_number - 1) * chunk
+            size = min(chunk, file_size - offset)
+            if is_path:
+                async with aiofiles.open(file, "rb") as f:
+                    await f.seek(offset)
+                    data = await f.read(size)
+            else:
+                data = file[offset : offset + size]
+
+            async with sem:
+                if reinit.is_set():
+                    return
+                for attempt in range(max_retries):
+                    try:
+                        async with self.session.post(
+                            url=upload_url,
+                            headers={
+                                "auth": self.client.auth,
+                                "file-id": file_id,
+                                "total-part": str(total_parts),
+                                "part-number": str(part_number),
+                                "chunk-size": str(len(data)),
+                                "access-hash-send": access_hash_send,
+                            },
+                            data=data,
+                            proxy=self.client.proxy,
+                        ) as response:
+                            resp = await response.json()
+                        if resp.get("status") == "ERROR_TRY_AGAIN":
+                            reinit.set()
+                            return
+                        async with progress_lock:
+                            uploaded += len(data)
+                            cur = uploaded
+                        await handle_callback(file_size, cur)
+                        if part_number == total_parts:
+                            final_chunk_resp["resp"] = resp
+                        return resp
+                    except Exception as e:  # noqa: BLE001
+                        self.logger.warning(
+                            f"Error uploading chunk {part_number} "
+                            f"(attempt {attempt + 1}/{max_retries}): {e}"
+                        )
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(backoff * (2 ** attempt))
+                        else:
+                            raise
+
+        tasks = [
+            asyncio.create_task(upload_chunk(n)) for n in range(1, total_parts + 1)
+        ]
+        try:
+            await asyncio.gather(*tasks)
+        except Exception:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            raise
+
+        if reinit.is_set():
+            self.logger.warning("Server requested reinitialization. Restarting upload.")
+            continue
+
+        upload_result = final_chunk_resp.get("resp") or {}
+        if (
+            upload_result.get("status") == "OK"
+            and upload_result.get("status_det") == "OK"
+        ):
+            return Update(
+                {
+                    "mime": mime,
+                    "size": file_size,
+                    "dc_id": dc_id,
+                    "file_id": file_id,
+                    "file_name": file_name,
+                    "access_hash_rec": upload_result["data"]["access_hash_rec"],
+                }
+            )
+        raise rubpy_exceptions(upload_result.get("status_det"))(upload_result)
+
+
+def _install_parallel_uploader(client: Client) -> None:
+    conn = getattr(client, "connection", None)
+    if conn is None:
+        logger.warning("[rubika] no connection on client, skip parallel patch")
+        return
+    conn.upload_file = types.MethodType(_parallel_upload_file, conn)
+    logger.info(
+        "[rubika] parallel uploader installed (concurrency=%d, chunk=%d B)",
+        RUBIKA_UPLOAD_CONCURRENCY, RUBIKA_UPLOAD_CHUNK,
+    )
